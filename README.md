@@ -21,9 +21,9 @@ When your IDE crashes or you force-quit a terminal, child processes survive as o
 
 **84% of developers now use AI tools** (Stack Overflow 2025). Each AI coding session spawns 3-10 background processes. None reliably clean up on crash or force-quit.
 
-macOS makes this worse: there's no `PR_SET_PDEATHSIG` (Linux's mechanism to auto-kill children when parents die), no `PR_SET_CHILD_SUBREAPER`, no kernel-level safety net. When your IDE dies on macOS, orphans survive indefinitely.
+macOS makes this worse: there's no `PR_SET_PDEATHSIG` (Linux's mechanism to auto-kill children when parents die), no kernel-level safety net. When your IDE dies on macOS, orphans survive indefinitely.
 
-`kill-port` gets **1.16M weekly npm downloads** — that's a million developers manually killing port-squatting processes every week. `fkill-cli` has 6,900 GitHub stars. Both are reactive (you find the problem, you kill it). Nothing proactively detects and cleans up orphans.
+`kill-port` gets **1.16M weekly npm downloads** — that's a million developers manually killing port-squatting processes every week. Both are reactive (you find the problem, you kill it). Nothing proactively detects and cleans up orphans.
 
 devreap does.
 
@@ -47,24 +47,35 @@ go install github.com/tjp2021/devreap/cmd/devreap@latest
 
 ## Quick Start
 
+**Recommended setup — two commands:**
+
 ```bash
-# See what's orphaned right now
-devreap scan
-
-# Start the daemon (scans every 30s, kills orphans automatically)
-devreap start
-
-# Install as LaunchAgent (auto-start on login)
+# 1. Install as a LaunchAgent so it runs automatically on login
 devreap install
 
-# Check status
-devreap status
+# 2. Start it now (without waiting for next login)
+devreap start
+```
 
-# Run diagnostics
-devreap doctor
+That's it. devreap runs in the background, scans every 30 seconds, and kills orphans automatically. You'll get a macOS notification when something gets killed.
+
+**Just want to see what's orphaned without running a daemon:**
+
+```bash
+devreap scan       # show orphan candidates
+devreap scan -v    # show all matched processes, including safe ones (useful for debugging)
+```
+
+**Check it's running:**
+
+```bash
+devreap status
+devreap doctor     # full diagnostics — checks config, patterns, process enumeration
 ```
 
 ## What It Looks Like
+
+Running `devreap scan` shows matched processes and their scores:
 
 ```
 $ devreap scan
@@ -79,11 +90,15 @@ PID    NAME  PATTERN          SCORE  AGE     STATUS  SIGNALS
 7099   node  node-mcp-server  0.65   18h33m  ORPHAN  ppid_is_init, exceeded_duration, no_tty
 ```
 
-```
-$ devreap logs --level info
+The **SIGNALS** column shows which signals contributed to the score — what specifically made devreap flag this process. `ppid_is_init` means the parent died. `parent_ide_dead` means no IDE is running. `exceeded_duration` means it's been running longer than this type of process should. If you think something was killed incorrectly, the signals tell you exactly why it was flagged.
 
-14:02:31 INFO daemon starting
-14:02:31 INFO found 2 orphan candidates
+Use `devreap scan -v` to see all matched processes, including ones below the kill threshold — useful when tuning or debugging false positives.
+
+When the daemon kills something, it logs the full reason:
+
+```
+$ devreap logs
+
 14:02:31 INFO killed orphan pid=3338 process=node pattern=node-mcp-server score=0.70 signals=[ppid_is_init=0.40,parent_ide_dead=0.30]
 14:02:31 INFO killed orphan pid=7099 process=node pattern=node-mcp-server score=0.65 signals=[ppid_is_init=0.40,exceeded_duration=0.25]
 ```
@@ -92,23 +107,21 @@ $ devreap logs --level info
 
 ### Multi-Signal Orphan Scoring
 
-devreap doesn't use binary "is orphan" / "isn't orphan" detection. A process that matches a known pattern gets scored across multiple signals:
+devreap doesn't use binary "is orphan" / "isn't orphan" detection. A process that matches a known pattern gets scored across multiple signals. Each signal has a weight — the score is the sum of weights for signals that fire. If the total reaches the kill threshold (default 0.6), the process is killed.
 
-| Signal | Weight | Description |
-|--------|--------|-------------|
-| `ppid_is_init` | 0.40 | PPID is 1 (parent died, reparented to launchd) |
-| `parent_ide_dead` | 0.30 | No IDE process running (VS Code, Cursor, Claude Code, Zed, JetBrains) |
-| `exceeded_duration` | 0.25 | Running longer than the pattern's max duration |
-| `has_listener` | 0.20 | Bound to a listening port (potential orphaned server) |
-| `no_tty` | 0.15 | No controlling terminal attached |
-
-**Default threshold: 0.6** — a process needs multiple signals to be flagged. This eliminates false positives.
+| Signal | Weight | When it fires |
+|--------|--------|---------------|
+| `ppid_is_init` | 0.40 | Parent process died — process was reparented to launchd (PPID = 1) |
+| `parent_ide_dead` | 0.30 | No IDE is running anywhere on the machine |
+| `exceeded_duration` | 0.25 | Process has been running longer than its pattern's max duration |
+| `has_listener` | 0.20 | Process is bound to a listening TCP port |
+| `no_tty` | 0.15 | Process has no controlling terminal |
 
 **Examples:**
-- MCP server, PPID=1, no Cursor running → **0.70** → killed
-- MCP server, PPID=1, Cursor IS running → **0.40** → safe
-- Dev server, PPID=1, running 48 hours → **0.65** → killed
-- Your Postgres, running as `_postgres` user → **0.00** → ignored (wrong user)
+- MCP server, PPID=1, no Cursor running → 0.40 + 0.30 = **0.70** → killed
+- MCP server, PPID=1, Cursor IS running → 0.40 only = **0.40** → safe
+- Dev server, PPID=1, running 48 hours → 0.40 + 0.25 = **0.65** → killed
+- Your Postgres, running as `_postgres` user → **0.00** → ignored (devreap only scores your own processes)
 
 ### IDE Detection
 
@@ -123,103 +136,112 @@ devreap reads your IDE's MCP configuration files:
 - `~/.cursor/mcp.json` (Cursor)
 - `~/.vscode/mcp.json` (VS Code)
 
-It knows which MCP servers *should* be running. If servers are running but no IDE is active, they're flagged.
+It knows which MCP servers *should* be running. If those servers are running but no IDE is active, they're flagged as orphans. `devreap doctor` will warn you if any of these files exist but can't be parsed.
 
-### Pattern-Aware Signal Strategy
+### How Killing Works
 
-Each process type gets the right shutdown signal:
-- **ffmpeg** → `SIGINT` first (writes moov atom for clean MP4, then SIGTERM, then SIGKILL)
-- **Node.js** → `SIGTERM` → `SIGKILL`
-- **Chrome** → `SIGTERM` with extended grace period
+When a process hits the threshold, devreap sends signals in sequence and waits between each:
+
+1. **First signal** (SIGTERM by default, SIGINT for ffmpeg) — asks the process to exit cleanly
+2. **Wait** (grace period, default 5 seconds)
+3. **SIGTERM** (if first signal was SIGINT)
+4. **Wait** (grace period)
+5. **SIGKILL** — force kill if still running
+
+ffmpeg gets SIGINT first because that's the signal that makes it write the MP4 file headers correctly. SIGKILL on ffmpeg produces a corrupted file.
 
 ### Safety
 
-- **PID reuse protection** — verifies process name before sending signals
-- **User isolation** — only kills your processes, never another user's
-- **Blocklist** — postgres, redis, nginx, sshd, and 20+ system processes are protected
-- **PID 1 / self / parent protection** — hardcoded, can't be overridden
-- **Config validation** — rejects invalid thresholds, weights, and intervals at startup
+devreap will **never** kill:
+- PID 1 (launchd/init) — hardcoded
+- Its own process — hardcoded
+- Its parent process — hardcoded
+- Any process owned by a different user
+- Anything on the blocklist (postgres, redis, nginx, sshd, and 20+ other system processes by default)
+
+Before sending any signal, devreap re-verifies the process name matches what was scanned. If the PID was reused by a different process in between, it aborts.
 
 ## Commands
 
 ```
 devreap scan                   # One-shot scan, print orphan candidates
-devreap scan --json            # Machine-readable output
+devreap scan --json            # Machine-readable JSON output
 devreap scan -v                # Show all pattern matches (including safe ones)
 devreap start                  # Start background daemon
-devreap start --foreground     # Foreground mode (used by LaunchAgent)
 devreap stop                   # Stop daemon
-devreap status                 # Daemon status + config
-devreap kill <pid>             # Manual graceful kill
-devreap kill --port 3000       # Kill by port
-devreap logs                   # View recent daemon log entries
-devreap logs -n 100            # Show last 100 entries
-devreap logs --level error     # Filter by severity
-devreap logs --json            # Raw JSON (pipe to jq)
-devreap install                # Install macOS LaunchAgent
+devreap status                 # Daemon status + current config
+devreap install                # Install macOS LaunchAgent (auto-start on login)
 devreap uninstall              # Remove LaunchAgent
-devreap doctor                 # Run diagnostics
-devreap patterns               # List all 18 built-in patterns
-devreap version                # Print version
+devreap kill <pid>             # Manually kill a process gracefully
+devreap kill --port 3000       # Kill whatever is listening on a port
+devreap logs                   # View recent daemon log entries (last 50)
+devreap logs -n 100            # Show last N entries
+devreap logs --level error     # Filter by severity (debug, info, warn, error)
+devreap logs --json            # Raw JSON lines — pipe to jq for filtering
+devreap doctor                 # Diagnostics: config, patterns, permissions, MCP configs
+devreap patterns               # List all 18 built-in patterns with durations and signals
+devreap version                # Print version, commit, and build date
 ```
 
 ## Configuration
 
-Optional. devreap works with zero config using sensible defaults.
-
-Create `~/.config/devreap/config.yaml` to customize:
+devreap works out of the box with no config file. Create `~/.config/devreap/config.yaml` only if you need to change something.
 
 ```yaml
-scan_interval: 30s       # How often to scan (min: 1s, max: 24h)
-kill_threshold: 0.6      # Score threshold to kill (0.1 - 1.0)
-grace_period: 5s         # Time between signals
-dry_run: false           # Log what would be killed without killing
+scan_interval: 30s       # How often to scan. Min: 1s. Max: 24h.
+kill_threshold: 0.6      # Minimum score to kill a process. Range: 0.1 - 1.0.
+                         # Lower = more aggressive. Higher = more conservative.
+grace_period: 5s         # How long to wait between signals (SIGTERM → wait → SIGKILL).
+                         # Min: 1s. Give processes time to clean up before force-killing.
+dry_run: false           # If true, logs what would be killed but doesn't kill anything.
+                         # Useful for testing — run `devreap logs` to see what it caught.
 
 notify:
-  enabled: true          # macOS notifications on kill
+  enabled: true          # macOS notifications when the daemon kills something.
 
-# Tune signal weights (each 0.0 - 1.0)
-# Higher weight = that signal contributes more to the orphan score.
-# A process is killed when its total score >= kill_threshold (default 0.6).
+# Signal weights — how much each signal contributes to the orphan score.
+# A process is killed when its total score >= kill_threshold.
+# Higher weight = that signal matters more. Each must be 0.0 - 1.0.
 #
-# Common tuning scenarios:
-#   Getting false positives on MCP servers while IDE is open?
-#     → Lower parent_ide_dead (e.g. 0.1) so IDE presence matters less
-#   Running headless servers with no TTY that aren't orphans?
-#     → Lower no_tty (e.g. 0.05) so terminal absence matters less
+# When to tune weights:
+#   Getting false positives on MCP servers while your IDE is open?
+#     → Lower parent_ide_dead (e.g. 0.1)
+#   Running intentional background servers with no TTY?
+#     → Lower no_tty (e.g. 0.05)
 #   Want more aggressive cleanup of long-running processes?
 #     → Raise exceeded_duration (e.g. 0.4)
-#   Want to rely almost entirely on PPID detection?
-#     → Raise ppid_is_init (e.g. 0.7) and lower the others
-weights:
-  ppid_is_init: 0.4      # Parent process died (PPID reparented to launchd)
-  parent_ide_dead: 0.3   # No IDE running on this machine
-  exceeded_duration: 0.25 # Process running longer than pattern's max_duration
-  has_listener: 0.2      # Process is bound to a listening port
-  no_tty: 0.15           # No controlling terminal
-
-# Note: setting one weight preserves all others at their defaults.
+#   Want to rely almost entirely on PPID?
+#     → Raise ppid_is_init (e.g. 0.7)
+#
 # You only need to specify the weights you want to change.
+# Unspecified weights keep their defaults.
+weights:
+  ppid_is_init: 0.4       # Parent process died (PPID = 1)
+  parent_ide_dead: 0.3    # No IDE running on this machine
+  exceeded_duration: 0.25 # Running longer than pattern's max_duration
+  has_listener: 0.2       # Bound to a TCP listening port
+  no_tty: 0.15            # No controlling terminal
 
-# Never kill these (in addition to built-in system process protection)
+# Processes to never kill, by name. Case-insensitive.
+# These are in addition to the built-in protection list (postgres, redis, nginx, sshd, etc.)
 blocklist:
-  - postgres
-  - redis-server
-  - nginx
+  - my-database
+  - my-background-worker
 
-# Always skip these even if they match a pattern and score above threshold.
-# Use this for persistent servers you intentionally run in the background.
+# Processes to skip even if they score above the threshold.
+# Use this for servers you intentionally run persistently in the background.
+# Matches against process name and command line. Case-insensitive.
 allowlist:
   - my-persistent-mcp-server
 
-# Additional pattern files beyond built-ins
+# Paths to additional YAML pattern files to load alongside the built-ins.
 extra_patterns:
   - ~/.config/devreap/my-patterns.yaml
 ```
 
 ## Built-in Patterns
 
-18 patterns across 4 categories:
+18 patterns across 4 categories. The **Max Duration** is how long a process of that type is allowed to run before the `exceeded_duration` signal fires — it's not a hard kill timer, it contributes 0.25 to the score.
 
 | Category | Patterns | Max Duration | Signal |
 |----------|----------|-------------|--------|
@@ -228,35 +250,49 @@ extra_patterns:
 | **Headless browsers** | Chrome (headless + remote debugging), Firefox | 2-4h | SIGTERM |
 | **Media tools** | ffmpeg, ffprobe, sox, ImageMagick | 30m-2h | SIGINT/SIGTERM |
 
-See all with `devreap patterns`.
+Run `devreap patterns` for the full list with all fields.
+
+## Troubleshooting
+
+**Something got killed that shouldn't have been**
+
+Run `devreap logs --json | tail -20` to see the last kills with full signal breakdown. The `signals` field shows exactly what triggered it. Then either:
+- Add it to the `allowlist` in your config to permanently protect it
+- Lower the relevant weight if that signal fires too aggressively for your setup
+- Raise `kill_threshold` (e.g. to `0.7`) to require stronger evidence before killing
+
+**devreap isn't catching orphans I know exist**
+
+Run `devreap scan -v` — this shows all processes matching a pattern, even ones below the threshold. Look at their scores and which signals are firing. If a process has score 0.40 and you want it caught, either lower `kill_threshold` or raise the weight of a signal that's firing.
+
+**I want to test what it would kill before letting it run for real**
+
+Set `dry_run: true` in your config, then run `devreap start`. It will log everything it *would* kill to `devreap logs` without actually killing anything. Review the logs and adjust config, then set `dry_run: false`.
+
+**A process isn't matching any pattern**
+
+Run `devreap patterns` to see what's covered. If your process isn't there, you can add a custom pattern — see the CONTRIBUTING guide.
+
+**devreap doctor shows a warning**
+
+Run `devreap doctor` — it checks config validity, pattern loading, process enumeration, MCP config parsing, and LaunchAgent status. Warnings include an explanation of what to do.
 
 ## Architecture
 
-```
-cmd/devreap/main.go           → entry point
-internal/
-  cli/                         → 10 cobra commands
-  scanner/
-    process.go                 → gopsutil process enumeration + port mapping
-    scorer.go                  → multi-signal scoring engine + IDE detection
-    orphan.go                  → threshold filtering + parent-first kill ordering
-    mcp.go                     → MCP config cross-referencing
-  patterns/
-    registry.go                → go:embed YAML pattern loading
-    matcher.go                 → compiled regex caching (18 compiles, not 12,600)
-  killer/
-    killer.go                  → PID-reuse-safe signal delivery
-    safety.go                  → blocklist + ownership checks
-    signals.go                 → per-pattern signal sequences
-  daemon/
-    daemon.go                  → scan loop with 30s timeout, sync.Once stop
-    launchagent.go             → macOS plist generation + bootstrap/bootout
-  config/                      → YAML config with validation + partial merge
-  logger/                      → structured JSON logging with rotation
-  notify/                      → macOS notifications via osascript
-```
-
 Single static binary. No runtime dependencies. Cross-compiles to macOS (arm64/amd64) and Linux.
+
+```
+cmd/devreap/main.go     → entry point
+internal/
+  scanner/              → process enumeration, orphan scoring, MCP cross-referencing
+  patterns/             → embedded YAML pattern library, regex matching
+  killer/               → signal delivery, PID reuse protection, safety checks
+  daemon/               → scan loop, LaunchAgent install/uninstall
+  config/               → YAML config loading with validation
+  logger/               → structured JSON logging with rotation
+  notify/               → macOS notifications
+  cli/                  → all commands
+```
 
 ## License
 
