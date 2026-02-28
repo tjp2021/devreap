@@ -1,0 +1,32 @@
+patterns:
+  - name: ffmpeg
+    category: media
+    command: "^ffmpeg$"
+    max_duration: 2h
+    signal: sigint
+    grace_period: 10s
+    description: "ffmpeg encoding/streaming processes (use SIGINT for clean shutdown)"
+
+  - name: ffprobe
+    category: media
+    command: "^ffprobe$"
+    max_duration: 30m
+    signal: sigterm
+    grace_period: 5s
+    description: "ffprobe media analysis"
+
+  - name: sox
+    category: media
+    command: "^sox$"
+    max_duration: 1h
+    signal: sigterm
+    grace_period: 5s
+    description: "SoX audio processing"
+
+  - name: imagemagick
+    category: media
+    command: "^(convert|magick)$"
+    max_duration: 1h
+    signal: sigterm
+    grace_period: 5s
+    description: "ImageMagick processing"

@@ -1,0 +1,56 @@
+version: "2"
+
+run:
+  timeout: 3m
+  go: "1.25"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - gosec
+    - misspell
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Println
+        - (io.Writer).Write
+        - (*os/exec.Cmd).Wait
+        - (*os.Process).Signal
+        - os.Remove
+        - os.RemoveAll
+        - os.Rename
+        - os.WriteFile
+        - (*os.File).Close
+        - (*github.com/tjp2021/devreap/internal/logger.Logger).Close
+        - (github.com/tjp2021/devreap/internal/notify.Notifier).Notify
+        - (*text/tabwriter.Writer).Flush
+        - (*os/exec.Cmd).CombinedOutput
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+    gosec:
+      excludes:
+        - G115  # int overflow on PID conversion — PIDs are always < 2^31
+        - G204  # subprocess launching is core functionality
+        - G301  # 0755 dirs are standard Unix
+        - G302  # 0644 files are standard Unix
+        - G304  # file inclusion via variable — we validate paths
+        - G104  # intentionally ignored errors on cleanup ops (Close, Remove, Rename)
+        - G306  # WriteFile 0644 is intentional
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec

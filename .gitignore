@@ -1,0 +1,21 @@
+# Build output
+/devreap
+/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+coverage.out
+*.test
+
+# Debug tools
+/cmd/debug/

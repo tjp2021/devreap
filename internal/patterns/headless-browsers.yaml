@@ -1,0 +1,27 @@
+patterns:
+  - name: chrome-headless
+    category: headless-browser
+    command: "^(Google Chrome|chrome|chromium)$"
+    args: "--headless"
+    max_duration: 2h
+    signal: sigterm
+    grace_period: 10s
+    description: "Headless Chrome/Chromium instances"
+
+  - name: chrome-remote-debugging
+    category: headless-browser
+    command: "^(Google Chrome|chrome|chromium)$"
+    args: "--remote-debugging-port"
+    max_duration: 4h
+    signal: sigterm
+    grace_period: 10s
+    description: "Chrome with remote debugging (Puppeteer, Playwright)"
+
+  - name: firefox-headless
+    category: headless-browser
+    command: "^firefox$"
+    args: "--headless"
+    max_duration: 2h
+    signal: sigterm
+    grace_period: 10s
+    description: "Headless Firefox instances"

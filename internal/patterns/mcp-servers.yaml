@@ -1,0 +1,45 @@
+patterns:
+  - name: node-mcp-server
+    category: mcp
+    command: "^node$"
+    args: "(mcp|model.context|modelcontextprotocol|@modelcontextprotocol)"
+    max_duration: 4h
+    signal: sigterm
+    grace_period: 5s
+    description: "Node.js MCP server processes"
+
+  - name: python-mcp-server
+    category: mcp
+    command: "^python[0-9.]*$"
+    args: "(mcp|model.context|modelcontextprotocol)"
+    max_duration: 4h
+    signal: sigterm
+    grace_period: 5s
+    description: "Python MCP server processes"
+
+  - name: npx-mcp-server
+    category: mcp
+    command: "^npx$"
+    args: "(mcp|@modelcontextprotocol)"
+    max_duration: 4h
+    signal: sigterm
+    grace_period: 5s
+    description: "npx-launched MCP server processes"
+
+  - name: uvx-mcp-server
+    category: mcp
+    command: "^uvx$"
+    args: "(mcp|model.context)"
+    max_duration: 4h
+    signal: sigterm
+    grace_period: 5s
+    description: "uvx-launched MCP server processes"
+
+  - name: docker-mcp-server
+    category: mcp
+    command: "^docker$"
+    args: "run.*(mcp|modelcontextprotocol)"
+    max_duration: 4h
+    signal: sigterm
+    grace_period: 10s
+    description: "Docker-based MCP server processes"

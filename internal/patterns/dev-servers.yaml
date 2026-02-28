@@ -1,0 +1,54 @@
+patterns:
+  - name: nextjs-dev
+    category: dev-server
+    command: "^node$"
+    args: "next dev"
+    max_duration: 24h
+    signal: sigterm
+    grace_period: 5s
+    description: "Next.js dev server"
+
+  - name: vite-dev
+    category: dev-server
+    command: "^node$"
+    args: "(^|/)vite( |$|/)"
+    max_duration: 24h
+    signal: sigterm
+    grace_period: 5s
+    description: "Vite dev server"
+
+  - name: webpack-dev
+    category: dev-server
+    command: "^node$"
+    args: "webpack.*(dev|serve)"
+    max_duration: 24h
+    signal: sigterm
+    grace_period: 5s
+    description: "Webpack dev server"
+
+  - name: expo-dev
+    category: dev-server
+    command: "^node$"
+    args: "expo start"
+    max_duration: 24h
+    signal: sigterm
+    grace_period: 5s
+    description: "Expo dev server"
+
+  - name: react-scripts
+    category: dev-server
+    command: "^node$"
+    args: "react-scripts start"
+    max_duration: 24h
+    signal: sigterm
+    grace_period: 5s
+    description: "Create React App dev server"
+
+  - name: esbuild-serve
+    category: dev-server
+    command: "^node$"
+    args: "esbuild.*--serve"
+    max_duration: 24h
+    signal: sigterm
+    grace_period: 5s
+    description: "esbuild serve mode"
