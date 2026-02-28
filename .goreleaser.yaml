@@ -36,6 +36,7 @@ brews:
   - repository:
       owner: tjp2021
       name: homebrew-devreap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/tjp2021/devreap"
     description: "Automatically detect and kill orphaned developer processes"
     license: "MIT"
