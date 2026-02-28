@@ -64,6 +64,30 @@ devreap status
 devreap doctor
 ```
 
+## What It Looks Like
+
+```
+$ devreap scan
+
+Scanned 712 processes, 4 matched patterns
+
+Orphan candidates (2):
+
+PID    NAME  PATTERN          SCORE  AGE     STATUS  SIGNALS
+---    ----  -------          -----  ---     ------  -------
+3338   node  node-mcp-server  0.70   26h44m  ORPHAN  ppid_is_init, parent_ide_dead
+7099   node  node-mcp-server  0.65   18h33m  ORPHAN  ppid_is_init, exceeded_duration, no_tty
+```
+
+```
+$ devreap logs --level info
+
+14:02:31 INFO daemon starting
+14:02:31 INFO found 2 orphan candidates
+14:02:31 INFO killed orphan pid=3338 process=node pattern=node-mcp-server score=0.70 signals=[ppid_is_init=0.40,parent_ide_dead=0.30]
+14:02:31 INFO killed orphan pid=7099 process=node pattern=node-mcp-server score=0.65 signals=[ppid_is_init=0.40,exceeded_duration=0.25]
+```
+
 ## How It Works
 
 ### Multi-Signal Orphan Scoring
