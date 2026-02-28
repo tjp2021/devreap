@@ -179,20 +179,36 @@ notify:
   enabled: true          # macOS notifications on kill
 
 # Tune signal weights (each 0.0 - 1.0)
+# Higher weight = that signal contributes more to the orphan score.
+# A process is killed when its total score >= kill_threshold (default 0.6).
+#
+# Common tuning scenarios:
+#   Getting false positives on MCP servers while IDE is open?
+#     → Lower parent_ide_dead (e.g. 0.1) so IDE presence matters less
+#   Running headless servers with no TTY that aren't orphans?
+#     → Lower no_tty (e.g. 0.05) so terminal absence matters less
+#   Want more aggressive cleanup of long-running processes?
+#     → Raise exceeded_duration (e.g. 0.4)
+#   Want to rely almost entirely on PPID detection?
+#     → Raise ppid_is_init (e.g. 0.7) and lower the others
 weights:
-  ppid_is_init: 0.4
-  no_tty: 0.15
-  parent_ide_dead: 0.3
-  exceeded_duration: 0.25
-  has_listener: 0.2
+  ppid_is_init: 0.4      # Parent process died (PPID reparented to launchd)
+  parent_ide_dead: 0.3   # No IDE running on this machine
+  exceeded_duration: 0.25 # Process running longer than pattern's max_duration
+  has_listener: 0.2      # Process is bound to a listening port
+  no_tty: 0.15           # No controlling terminal
 
-# Never kill these
+# Note: setting one weight preserves all others at their defaults.
+# You only need to specify the weights you want to change.
+
+# Never kill these (in addition to built-in system process protection)
 blocklist:
   - postgres
   - redis-server
   - nginx
 
-# Processes to skip even if they match patterns
+# Always skip these even if they match a pattern and score above threshold.
+# Use this for persistent servers you intentionally run in the background.
 allowlist:
   - my-persistent-mcp-server
 
@@ -200,8 +216,6 @@ allowlist:
 extra_patterns:
   - ~/.config/devreap/my-patterns.yaml
 ```
-
-Setting one weight preserves all others at their defaults — no silent zeroing.
 
 ## Built-in Patterns
 
