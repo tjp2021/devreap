@@ -48,9 +48,9 @@ linters:
         - G104  # intentionally ignored errors on cleanup ops (Close, Remove, Rename)
         - G306  # WriteFile 0644 is intentional
 
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosec
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec

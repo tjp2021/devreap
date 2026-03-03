@@ -8,7 +8,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/internal/cli.Commit=$(COMMIT) \
 	-X $(MODULE)/internal/cli.BuildDate=$(DATE)
 
-.PHONY: build test lint cover install clean
+.PHONY: build test lint cover install clean vet fmt all
 
 build:
 	go build -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/devreap

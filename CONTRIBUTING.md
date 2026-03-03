@@ -44,7 +44,7 @@ make clean       # Remove build artifacts
 
 ### Adding a Pattern
 
-1. Add a new entry to the appropriate YAML file in `patterns/`
+1. Add a new entry to the appropriate YAML file in `internal/patterns/`
 2. Each pattern needs: `name`, `args_regex`, `max_duration`, `signal`
 3. Run `make test` to verify pattern loading
 4. Test with `go run ./cmd/devreap scan -v` to see if your pattern matches
