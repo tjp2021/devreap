@@ -132,7 +132,8 @@ Detected IDEs: VS Code, Cursor, Claude Code CLI, Windsurf, Zed, IntelliJ IDEA, W
 ### MCP Config Cross-Referencing
 
 devreap reads your IDE's MCP configuration files:
-- `~/.claude.json` (Claude Code)
+- `~/.claude/mcp.json` (Claude Code — native binary)
+- `~/.claude.json` (Claude Code — legacy node_modules install)
 - `~/.cursor/mcp.json` (Cursor)
 - `~/.vscode/mcp.json` (VS Code)
 
