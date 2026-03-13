@@ -29,6 +29,7 @@ var ideSignatures = []ideSignature{
 	// Claude Code CLI — match the actual binary, not anything with "claude" in it
 	{pathContains: "/node_modules/.bin/claude"},
 	{pathContains: "/@anthropic-ai/claude-code"},
+	{pathContains: "/.local/share/claude/"},
 
 	// Windsurf
 	{pathContains: "/Windsurf.app/"},
@@ -145,7 +146,7 @@ func checkIDERunningFromList(procs []ProcessInfo) bool {
 
 	for _, p := range procs {
 		for _, sig := range ideSignatures {
-			if sig.pathContains != "" && strings.Contains(p.Cmdline, sig.pathContains) {
+			if sig.pathContains != "" && (strings.Contains(p.Cmdline, sig.pathContains) || strings.Contains(p.Exe, sig.pathContains)) {
 				return true
 			}
 			if sig.exactName != "" && p.Name == sig.exactName {

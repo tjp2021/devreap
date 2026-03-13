@@ -15,6 +15,7 @@ type ProcessInfo struct {
 	PID        int32
 	PPID       int32
 	Name       string
+	Exe        string
 	Cmdline    string
 	Args       string
 	CreateTime time.Time
@@ -66,6 +67,7 @@ func processToInfo(p *process.Process, portMap map[int32][]uint32) *ProcessInfo 
 	}
 
 	ppid, _ := p.Ppid()
+	exe, _ := p.Exe()
 	cmdline, _ := p.Cmdline()
 	createMs, _ := p.CreateTime()
 	terminal, _ := p.Terminal()
@@ -92,6 +94,7 @@ func processToInfo(p *process.Process, portMap map[int32][]uint32) *ProcessInfo 
 		PID:        p.Pid,
 		PPID:       ppid,
 		Name:       name,
+		Exe:        exe,
 		Cmdline:    cmdline,
 		Args:       args,
 		CreateTime: createTime,

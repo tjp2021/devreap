@@ -35,6 +35,7 @@ func LoadMCPConfigs() MCPLoadResult {
 
 	paths := []string{
 		filepath.Join(home, ".claude.json"),
+		filepath.Join(home, ".claude", "mcp.json"),
 		filepath.Join(home, ".cursor", "mcp.json"),
 		filepath.Join(home, ".vscode", "mcp.json"),
 		filepath.Join(home, "Library", "Application Support", "Code", "User", "settings.json"),

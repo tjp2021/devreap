@@ -229,7 +229,7 @@ func TestIDEDetectionClaude(t *testing.T) {
 		t.Error("Random claude-helper should NOT be detected as an IDE")
 	}
 
-	// Actual Claude Code CLI should be detected
+	// Actual Claude Code CLI (node_modules install) should be detected
 	procs = []ProcessInfo{
 		{
 			Name:    "node",
@@ -237,7 +237,19 @@ func TestIDEDetectionClaude(t *testing.T) {
 		},
 	}
 	if !checkIDERunningFromList(procs) {
-		t.Error("Claude Code CLI should be detected as an IDE")
+		t.Error("Claude Code CLI (node_modules) should be detected as an IDE")
+	}
+
+	// Claude Code native binary (installed via ~/.local/share/claude/) should be detected via Exe path
+	procs = []ProcessInfo{
+		{
+			Name:    "2.1.74",
+			Exe:     "/Users/testuser/.local/share/claude/versions/2.1.74",
+			Cmdline: "claude --dangerously-skip-permissions",
+		},
+	}
+	if !checkIDERunningFromList(procs) {
+		t.Error("Claude Code native binary should be detected as an IDE via Exe path")
 	}
 }
 
