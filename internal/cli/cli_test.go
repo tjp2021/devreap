@@ -12,7 +12,10 @@ import (
 
 // buildBinary compiles the devreap binary for testing and returns the path.
 // Cached across tests in a single test run via t.TempDir at the package level.
-var testBinary string
+var (
+	testBinary string
+	testHome   string
+)
 
 func TestMain(m *testing.M) {
 	// Build the binary once for all CLI tests
@@ -23,6 +26,10 @@ func TestMain(m *testing.M) {
 	defer os.RemoveAll(dir)
 
 	testBinary = filepath.Join(dir, "devreap")
+	testHome = filepath.Join(dir, "home")
+	if err := os.MkdirAll(testHome, 0o755); err != nil {
+		panic(err)
+	}
 	cmd := exec.Command("go", "build", "-o", testBinary, "../../cmd/devreap")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -35,6 +42,7 @@ func TestMain(m *testing.M) {
 func runDevreap(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 	cmd := exec.Command(testBinary, args...)
+	cmd.Env = append(os.Environ(), "HOME="+testHome)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
