@@ -1,0 +1,173 @@
+package hygiene
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestNewChecker(t *testing.T) {
+	c, err := New()
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if c.homeDir == "" {
+		t.Fatal("homeDir should not be empty")
+	}
+}
+
+func TestRunAll(t *testing.T) {
+	c, err := New()
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	result := c.RunAll()
+	if result == nil {
+		t.Fatal("RunAll() returned nil")
+	}
+	// Result should have an Issues slice (possibly empty)
+	// Just verify it doesn't panic
+}
+
+func TestCheckZombieDotdirs(t *testing.T) {
+	// Create a temp dir to simulate a zombie dotdir
+	tmpHome := t.TempDir()
+	c := &Checker{homeDir: tmpHome}
+
+	// Create one of the known dead dirs
+	zombieDir := filepath.Join(tmpHome, ".clawdbot")
+	if err := os.MkdirAll(zombieDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Put a file in it so du reports a size
+	os.WriteFile(filepath.Join(zombieDir, "test"), []byte("data"), 0644)
+
+	r := &Result{}
+	c.checkZombieDotdirs(r)
+
+	if len(r.Issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(r.Issues))
+	}
+	if r.Issues[0].Check != "ZOMBIE_DOTDIR" {
+		t.Errorf("expected ZOMBIE_DOTDIR check, got %s", r.Issues[0].Check)
+	}
+}
+
+func TestCheckZombieDotdirs_Clean(t *testing.T) {
+	c := &Checker{homeDir: t.TempDir()}
+	r := &Result{}
+	c.checkZombieDotdirs(r)
+
+	if len(r.Issues) != 0 {
+		t.Fatalf("expected 0 issues, got %d", len(r.Issues))
+	}
+}
+
+func TestSessionCWDReadsRecordedPath(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "project-with-hyphens")
+	event, err := json.Marshal(map[string]string{"cwd": want})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(session, append(event, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := sessionCWD(session); got != want {
+		t.Fatalf("sessionCWD() = %q, want %q", got, want)
+	}
+}
+
+func TestCheckGhostSessionsUsesRecordedCWD(t *testing.T) {
+	home := t.TempDir()
+	projectDir := filepath.Join(home, ".claude", "projects", "ambiguous-dash-name")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(home, "missing-project-with-hyphens")
+	event, err := json.Marshal(map[string]string{"cwd": missing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "session.jsonl"), append(event, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Result{}
+	(&Checker{homeDir: home}).checkGhostSessions(r)
+	if len(r.Issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(r.Issues))
+	}
+	if !strings.Contains(r.Issues[0].Message, missing) {
+		t.Fatalf("issue %q does not include recorded cwd %q", r.Issues[0].Message, missing)
+	}
+}
+
+func TestCronExecutableSkipsEnvironmentAssignments(t *testing.T) {
+	got := cronExecutable([]string{"PATH=/usr/local/bin:/usr/bin", "python3", "/tmp/job.py"})
+	if got != "python3" {
+		t.Fatalf("cronExecutable() = %q, want python3", got)
+	}
+}
+
+func TestCheckDownloadsBuildup(t *testing.T) {
+	tmpHome := t.TempDir()
+	c := &Checker{homeDir: tmpHome}
+
+	dlDir := filepath.Join(tmpHome, "Downloads")
+	os.MkdirAll(dlDir, 0755)
+
+	// Create 51 files
+	for i := 0; i < 51; i++ {
+		os.WriteFile(filepath.Join(dlDir, fmt.Sprintf("file_%d.txt", i)), []byte("x"), 0644)
+	}
+
+	r := &Result{}
+	c.checkDownloadsBuildup(r)
+
+	if len(r.Issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(r.Issues))
+	}
+	if r.Issues[0].Check != "DOWNLOADS_BUILDUP" {
+		t.Errorf("expected DOWNLOADS_BUILDUP, got %s", r.Issues[0].Check)
+	}
+}
+
+func TestCheckDownloadsBuildup_Clean(t *testing.T) {
+	tmpHome := t.TempDir()
+	c := &Checker{homeDir: tmpHome}
+
+	dlDir := filepath.Join(tmpHome, "Downloads")
+	os.MkdirAll(dlDir, 0755)
+
+	// Create 10 files (under threshold)
+	for i := 0; i < 10; i++ {
+		os.WriteFile(filepath.Join(dlDir, fmt.Sprintf("file_%d.txt", i)), []byte("x"), 0644)
+	}
+
+	r := &Result{}
+	c.checkDownloadsBuildup(r)
+
+	if len(r.Issues) != 0 {
+		t.Fatalf("expected 0 issues, got %d", len(r.Issues))
+	}
+}
+
+func TestDirSizeMB(t *testing.T) {
+	// Non-existent dir should return 0
+	if mb := dirSizeMB("/nonexistent/dir/abc123"); mb != 0 {
+		t.Errorf("expected 0 for nonexistent dir, got %d", mb)
+	}
+
+	// Temp dir with some content
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "test"), make([]byte, 1024), 0644)
+	mb := dirSizeMB(tmpDir)
+	// Should be 0 or 1 MB (small content)
+	if mb < 0 {
+		t.Errorf("expected non-negative size, got %d", mb)
+	}
+}
