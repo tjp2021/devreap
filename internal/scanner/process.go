@@ -43,7 +43,7 @@ func EnumerateProcesses(ctx context.Context) ([]ProcessInfo, error) {
 	}
 
 	// get listening ports once
-	portMap := buildPortMap()
+	portMap := buildPortMap(ctx)
 
 	var result []ProcessInfo
 	for _, p := range procs {
@@ -102,10 +102,10 @@ func processToInfo(p *process.Process, portMap map[int32][]uint32) *ProcessInfo 
 	}
 }
 
-func buildPortMap() map[int32][]uint32 {
+func buildPortMap(ctx context.Context) map[int32][]uint32 {
 	portMap := make(map[int32][]uint32)
 
-	connections, err := net.Connections("tcp")
+	connections, err := net.ConnectionsWithContext(ctx, "tcp")
 	if err != nil {
 		return portMap
 	}
