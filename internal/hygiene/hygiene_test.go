@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,6 +31,91 @@ func TestRunAll(t *testing.T) {
 	}
 	// Result should have an Issues slice (possibly empty)
 	// Just verify it doesn't panic
+}
+
+func TestCheckBrokenLaunchAgentsIgnoresLabelPrefix(t *testing.T) {
+	if _, err := exec.LookPath("plutil"); err != nil {
+		t.Skip("plutil is not available on this platform")
+	}
+
+	home := t.TempDir()
+	agentDir := filepath.Join(home, "Library", "LaunchAgents")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	missing := filepath.Join(home, "missing-binary")
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.example.unrelated</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>%s</string>
+	</array>
+</dict>
+</plist>
+`, missing)
+	agentPath := filepath.Join(agentDir, "org.example.unrelated.plist")
+	if err := os.WriteFile(agentPath, []byte(plist), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Result{}
+	(&Checker{homeDir: home}).checkBrokenLaunchAgents(r)
+
+	if len(r.Issues) != 1 {
+		t.Fatalf("expected 1 issue for a broken agent with an unrelated label, got %d", len(r.Issues))
+	}
+	if r.Issues[0].Check != "BROKEN_LAUNCHAGENT" {
+		t.Errorf("expected BROKEN_LAUNCHAGENT check, got %s", r.Issues[0].Check)
+	}
+	if !strings.Contains(r.Issues[0].Message, missing) {
+		t.Errorf("issue %q does not name the missing target %q", r.Issues[0].Message, missing)
+	}
+}
+
+func TestCheckBrokenLaunchAgentsSkipsHealthyAgent(t *testing.T) {
+	if _, err := exec.LookPath("plutil"); err != nil {
+		t.Skip("plutil is not available on this platform")
+	}
+
+	home := t.TempDir()
+	agentDir := filepath.Join(home, "Library", "LaunchAgents")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(home, "present-binary")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.example.healthy</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>%s</string>
+	</array>
+</dict>
+</plist>
+`, target)
+	if err := os.WriteFile(filepath.Join(agentDir, "org.example.healthy.plist"), []byte(plist), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Result{}
+	(&Checker{homeDir: home}).checkBrokenLaunchAgents(r)
+
+	if len(r.Issues) != 0 {
+		t.Fatalf("expected 0 issues for a healthy agent, got %d", len(r.Issues))
+	}
 }
 
 func TestCheckZombieDotdirs(t *testing.T) {

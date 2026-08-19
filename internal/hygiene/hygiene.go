@@ -63,9 +63,11 @@ func (c *Checker) addIssue(r *Result, check, message string) {
 }
 
 // 1. Broken LaunchAgents — target executable doesn't exist.
+//
+// Every user LaunchAgent is checked. The label is not filtered, because a
+// broken agent is worth reporting whoever installed it.
 func (c *Checker) checkBrokenLaunchAgents(r *Result) {
 	agentDir := filepath.Join(c.homeDir, "Library", "LaunchAgents")
-	prefixes := []string{"com.yng.", "com.devreap.", "com.chatlens.", "com.yngpepe.", "com.tw."}
 
 	entries, err := os.ReadDir(agentDir)
 	if err != nil {
@@ -74,16 +76,6 @@ func (c *Checker) checkBrokenLaunchAgents(r *Result) {
 
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".plist") {
-			continue
-		}
-		matched := false
-		for _, prefix := range prefixes {
-			if strings.HasPrefix(entry.Name(), prefix) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
 			continue
 		}
 
