@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -384,8 +385,16 @@ weights:
 	if cfg.Notify.Enabled {
 		t.Error("expected notify disabled")
 	}
-	if len(cfg.Blocklist) != 2 {
-		t.Errorf("expected 2 blocklist entries, got %d", len(cfg.Blocklist))
+	// A user blocklist adds to the built-in list, it does not replace it.
+	// "postgres" and "redis" are already built in, so the merged list keeps
+	// every built-in entry and gains nothing.
+	if len(cfg.Blocklist) != len(DefaultBlocklist) {
+		t.Errorf("expected %d merged blocklist entries, got %d", len(DefaultBlocklist), len(cfg.Blocklist))
+	}
+	for _, want := range []string{"postgres", "redis", "sshd", "WindowServer", "launchd"} {
+		if !containsFold(cfg.Blocklist, want) {
+			t.Errorf("merged blocklist lost %q", want)
+		}
 	}
 	if len(cfg.Allowlist) != 1 {
 		t.Errorf("expected 1 allowlist entry, got %d", len(cfg.Allowlist))
@@ -395,5 +404,90 @@ weights:
 	}
 	if cfg.Weights.HasListener != 0.15 {
 		t.Errorf("expected has_listener 0.15, got %f", cfg.Weights.HasListener)
+	}
+}
+
+func containsFold(list []string, want string) bool {
+	for _, entry := range list {
+		if strings.EqualFold(entry, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// Regression: a user blocklist used to replace the built-in list wholesale,
+// so adding one custom entry silently removed protection for postgres, sshd,
+// WindowServer and every other built-in.
+func TestUserBlocklistAddsToBuiltin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "blocklist:\n  - my-database\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if !containsFold(cfg.Blocklist, "my-database") {
+		t.Error("user blocklist entry missing")
+	}
+	for _, builtin := range DefaultBlocklist {
+		if !containsFold(cfg.Blocklist, builtin) {
+			t.Errorf("built-in blocklist entry %q was dropped", builtin)
+		}
+	}
+	if len(cfg.Blocklist) != len(DefaultBlocklist)+1 {
+		t.Errorf("expected %d entries, got %d", len(DefaultBlocklist)+1, len(cfg.Blocklist))
+	}
+}
+
+func TestReplaceBuiltinBlocklistIsExplicitOptIn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "replace_builtin_blocklist: true\nblocklist:\n  - only-this\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if len(cfg.Blocklist) != 1 || cfg.Blocklist[0] != "only-this" {
+		t.Errorf("expected the user list verbatim, got %v", cfg.Blocklist)
+	}
+}
+
+// Omitting the key entirely must keep the built-in list intact.
+func TestNoUserBlocklistKeepsBuiltin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("scan_interval: 45s\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Blocklist) != len(DefaultBlocklist) {
+		t.Errorf("expected %d entries, got %d", len(DefaultBlocklist), len(cfg.Blocklist))
+	}
+}
+
+// mergeBlocklist must not mutate the package-level DefaultBlocklist.
+func TestMergeBlocklistDoesNotMutateDefaults(t *testing.T) {
+	before := len(DefaultBlocklist)
+	firstBefore := DefaultBlocklist[0]
+
+	_ = mergeBlocklist(DefaultBlocklist, []string{"extra-one", "extra-two"})
+
+	if len(DefaultBlocklist) != before || DefaultBlocklist[0] != firstBefore {
+		t.Error("mergeBlocklist mutated DefaultBlocklist")
 	}
 }

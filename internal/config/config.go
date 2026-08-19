@@ -22,6 +22,11 @@ type Config struct {
 	PidFile       string        `yaml:"pid_file"`
 	Blocklist     []string      `yaml:"blocklist"`
 	Allowlist     []string      `yaml:"allowlist"`
+	// ReplaceBuiltinBlocklist makes a user blocklist replace the built-in one
+	// instead of adding to it. Default false: user entries are added to the
+	// built-in list, so writing a blocklist can never remove protection for
+	// postgres, sshd, WindowServer, launchd, and the rest.
+	ReplaceBuiltinBlocklist bool `yaml:"replace_builtin_blocklist"`
 	Notify        NotifyConfig  `yaml:"notify"`
 	Patterns      []string      `yaml:"extra_patterns"` // paths to additional pattern files
 	Weights       WeightConfig  `yaml:"weights"`
@@ -89,6 +94,14 @@ func Load(path string) (*Config, error) {
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+
+	// yaml.Unmarshal overwrites the whole slice when the file has a
+	// "blocklist" key, which silently dropped every built-in protection.
+	// Add the user's entries to the built-in list unless they explicitly
+	// asked to replace it.
+	if !cfg.ReplaceBuiltinBlocklist {
+		cfg.Blocklist = mergeBlocklist(DefaultBlocklist, cfg.Blocklist)
 	}
 
 	// Merge weights: if the user's config included a "weights" key,
@@ -167,6 +180,29 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// mergeBlocklist returns the built-in entries followed by any user entries
+// that are not already present. Comparison is case-insensitive because the
+// blocklist is matched against process names. Neither input is mutated.
+func mergeBlocklist(builtin, user []string) []string {
+	merged := make([]string, 0, len(builtin)+len(user))
+	seen := make(map[string]struct{}, len(builtin)+len(user))
+
+	for _, list := range [][]string{builtin, user} {
+		for _, entry := range list {
+			if entry == "" {
+				continue
+			}
+			key := strings.ToLower(entry)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, entry)
+		}
+	}
+	return merged
 }
 
 func expandPath(path string) string {

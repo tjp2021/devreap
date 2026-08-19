@@ -233,6 +233,11 @@ blocklist:
   - my-database
   - my-background-worker
 
+# Set true to make the blocklist above REPLACE the built-in protection list
+# instead of adding to it. Leave false unless you know exactly what you are
+# giving up — replacing drops protection for sshd, WindowServer, launchd, etc.
+replace_builtin_blocklist: false
+
 # Processes to skip even if they score above the threshold.
 # Use this for servers you intentionally run persistently in the background.
 # Matches against process name and command line. Case-insensitive.
