@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	gopsProcess "github.com/shirou/gopsutil/v4/process"
+
 	"github.com/tjp2021/devreap/internal/config"
 	"github.com/tjp2021/devreap/internal/logger"
 	"github.com/tjp2021/devreap/internal/patterns"
@@ -75,6 +77,37 @@ func testConfig(t *testing.T) *config.Config {
 	// tests exercise the kill path, so they must ask for it explicitly.
 	cfg.DryRun = false
 	return cfg
+}
+
+// liveProcessInfo snapshots a running process the way a real scan would.
+// Kill-path tests need a genuine identity because the daemon re-verifies
+// name, cmdline and start time immediately before signalling.
+func liveProcessInfo(t *testing.T, pid int32) scanner.ProcessInfo {
+	t.Helper()
+	p, err := gopsProcess.NewProcess(pid)
+	if err != nil {
+		t.Fatalf("reading process %d: %v", pid, err)
+	}
+	name, _ := p.Name()
+	cmdline, _ := p.Cmdline()
+	createMs, err := p.CreateTime()
+	if err != nil {
+		t.Fatalf("reading start time of %d: %v", pid, err)
+	}
+	return scanner.ProcessInfo{
+		PID:             pid,
+		Name:            name,
+		Cmdline:         cmdline,
+		CreateTime:      time.UnixMilli(createMs),
+		CreateTimeKnown: true,
+	}
+}
+
+// stubRecheck makes the daemon's fresh-data re-check return a fixed answer.
+// Test processes have a live parent, so the real check would correctly refuse
+// to kill them; these tests are about the rest of the kill path.
+func stubRecheck(result bool) func(int32) (bool, error) {
+	return func(int32) (bool, error) { return result, nil }
 }
 
 func TestDaemonRun_StopsOnStopChannel(t *testing.T) {
@@ -207,10 +240,7 @@ func TestDaemonRun_DryRunDoesNotKill(t *testing.T) {
 			Matched:        1,
 			Orphans: []scanner.OrphanCandidate{
 				{
-					Process: scanner.ProcessInfo{
-						PID:  sleepPID,
-						Name: "sleep",
-					},
+					Process: liveProcessInfo(t, sleepPID),
 					Pattern: patterns.Pattern{
 						Name:   "test-pattern",
 						Signal: patterns.SignalTERM,
@@ -267,10 +297,7 @@ func TestDaemonRun_KillsOrphansAndNotifies(t *testing.T) {
 			Matched:        1,
 			Orphans: []scanner.OrphanCandidate{
 				{
-					Process: scanner.ProcessInfo{
-						PID:  sleepPID,
-						Name: "sleep",
-					},
+					Process: liveProcessInfo(t, sleepPID),
 					Pattern: patterns.Pattern{
 						Name:   "test-pattern",
 						Signal: patterns.SignalTERM,
@@ -285,6 +312,7 @@ func TestDaemonRun_KillsOrphansAndNotifies(t *testing.T) {
 	log := logger.NewStdout()
 
 	d := New(cfg, ms, log, notif)
+	d.recheckStrongSignal = stubRecheck(true)
 
 	done := make(chan error, 1)
 	go func() {
@@ -353,7 +381,7 @@ func TestDaemonRun_PatternGracePeriodOverride(t *testing.T) {
 		result: &scanner.ScanResult{
 			Orphans: []scanner.OrphanCandidate{
 				{
-					Process: scanner.ProcessInfo{PID: sleepPID, Name: "sleep"},
+					Process: liveProcessInfo(t, sleepPID),
 					Pattern: patterns.Pattern{
 						Name:        "test",
 						Signal:      patterns.SignalTERM,
@@ -369,6 +397,7 @@ func TestDaemonRun_PatternGracePeriodOverride(t *testing.T) {
 	notif := &mockNotifier{}
 
 	d := New(cfg, ms, log, notif)
+	d.recheckStrongSignal = stubRecheck(true)
 
 	done := make(chan error, 1)
 	go func() {
@@ -519,5 +548,111 @@ func TestDaemonRun_WeakSignalsAloneDoNotKill(t *testing.T) {
 	}
 	if len(notif.Messages()) > 0 {
 		t.Error("nothing was killed, so no notification should be sent")
+	}
+}
+
+// A scan snapshot can be a full scan interval old by the time a kill runs. If
+// the strong signal no longer holds on fresh data, the kill must be abandoned.
+func TestDaemonRun_StaleSnapshotDoesNotKill(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.DryRun = false
+
+	cmd := exec.Command("sleep", "3600")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start sleep: %v", err)
+	}
+	sleepPID := int32(cmd.Process.Pid)
+	go cmd.Wait()
+	t.Cleanup(func() {
+		cmd.Process.Signal(syscall.SIGKILL)
+	})
+
+	ms := &mockScanner{
+		result: &scanner.ScanResult{
+			TotalProcesses: 100,
+			Matched:        1,
+			Orphans: []scanner.OrphanCandidate{
+				{
+					Process: liveProcessInfo(t, sleepPID),
+					Pattern: patterns.Pattern{Name: "test-pattern", Signal: patterns.SignalTERM},
+					Score:   0.75,
+					Signals: map[string]float64{"ppid_is_init": 0.4, "parent_ide_dead": 0.3},
+				},
+			},
+		},
+	}
+	log := logger.NewStdout()
+	notif := &mockNotifier{}
+
+	d := New(cfg, ms, log, notif)
+	// The snapshot said the process was reparented; fresh data says otherwise.
+	d.recheckStrongSignal = stubRecheck(false)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- d.Run()
+	}()
+
+	time.Sleep(400 * time.Millisecond)
+	d.Stop()
+	<-done
+
+	proc, _ := os.FindProcess(int(sleepPID))
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		t.Error("process must survive when the re-check fails")
+	}
+	if len(notif.Messages()) > 0 {
+		t.Error("nothing was killed, so no notification should be sent")
+	}
+}
+
+// The real re-check refuses to kill a process that still has a live parent,
+// with no stub involved.
+func TestDaemonRun_RealRecheckSparesProcessWithLiveParent(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.DryRun = false
+
+	cmd := exec.Command("sleep", "3600")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start sleep: %v", err)
+	}
+	sleepPID := int32(cmd.Process.Pid)
+	go cmd.Wait()
+	t.Cleanup(func() {
+		cmd.Process.Signal(syscall.SIGKILL)
+	})
+
+	ms := &mockScanner{
+		result: &scanner.ScanResult{
+			TotalProcesses: 100,
+			Matched:        1,
+			Orphans: []scanner.OrphanCandidate{
+				{
+					Process: liveProcessInfo(t, sleepPID),
+					Pattern: patterns.Pattern{Name: "test-pattern", Signal: patterns.SignalTERM},
+					Score:   0.75,
+					// Snapshot claims reparenting; the live process disagrees.
+					Signals: map[string]float64{"ppid_is_init": 0.4, "parent_ide_dead": 0.3},
+				},
+			},
+		},
+	}
+	log := logger.NewStdout()
+	notif := &mockNotifier{}
+
+	d := New(cfg, ms, log, notif) // real re-check
+
+	done := make(chan error, 1)
+	go func() {
+		done <- d.Run()
+	}()
+
+	time.Sleep(400 * time.Millisecond)
+	d.Stop()
+	<-done
+
+	proc, _ := os.FindProcess(int(sleepPID))
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		t.Error("a process whose parent is alive must not be killed")
 	}
 }

@@ -1,8 +1,11 @@
 package scanner
 
 import (
+	"fmt"
 	"os/user"
 	"strings"
+
+	"github.com/shirou/gopsutil/v4/process"
 
 	"github.com/tjp2021/devreap/internal/config"
 	"github.com/tjp2021/devreap/internal/patterns"
@@ -190,4 +193,26 @@ func checkIDERunningFromList(procs []ProcessInfo) bool {
 		}
 	}
 	return false
+}
+
+// RecheckStrongSignal re-reads the live process and reports whether the strong
+// lifecycle signal still holds. A scan snapshot can be tens of seconds old by
+// the time a kill is attempted, and the kill decision must rest on current
+// facts, not stale ones.
+//
+// An error means the condition could not be confirmed, and callers must treat
+// that as "do not kill" rather than as a pass.
+func RecheckStrongSignal(pid int32) (bool, error) {
+	p, err := process.NewProcess(pid)
+	if err != nil {
+		return false, fmt.Errorf("re-reading process %d: %w", pid, err)
+	}
+
+	ppid, err := p.Ppid()
+	if err != nil {
+		return false, fmt.Errorf("re-reading parent of process %d: %w", pid, err)
+	}
+
+	// ppid_is_init: the parent died and the process was reparented to launchd.
+	return ppid == 1, nil
 }

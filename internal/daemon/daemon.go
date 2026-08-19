@@ -34,15 +34,21 @@ type Daemon struct {
 	notifier notify.Notifier
 	stopOnce sync.Once
 	stopCh   chan struct{}
+
+	// recheckStrongSignal re-reads a live process to confirm the kill
+	// conditions still hold. Injectable so tests can drive both outcomes;
+	// production always uses scanner.RecheckStrongSignal.
+	recheckStrongSignal func(pid int32) (bool, error)
 }
 
 func New(cfg *config.Config, s ScannerI, log *logger.Logger, notifier notify.Notifier) *Daemon {
 	return &Daemon{
-		cfg:      cfg,
-		scanner:  s,
-		log:      log,
-		notifier: notifier,
-		stopCh:   make(chan struct{}),
+		cfg:                 cfg,
+		scanner:             s,
+		log:                 log,
+		notifier:            notifier,
+		stopCh:              make(chan struct{}),
+		recheckStrongSignal: scanner.RecheckStrongSignal,
 	}
 }
 
@@ -167,9 +173,36 @@ func (d *Daemon) scanAndKill() {
 			gracePeriod = orphan.Pattern.GracePeriod
 		}
 
+		// The snapshot behind this decision can be a full scan interval old.
+		// Re-check the strong signal against the live process so a stale
+		// snapshot cannot drive a kill. A process whose parent came back, or
+		// whose condition can no longer be confirmed, is left alone.
+		stillOrphaned, err := d.recheckStrongSignal(orphan.Process.PID)
+		if err != nil || !stillOrphaned {
+			reason := "conditions no longer hold on fresh data"
+			if err != nil {
+				reason = err.Error()
+			}
+			d.log.Info("skipped kill after re-check", logger.Entry{
+				PID:     orphan.Process.PID,
+				Process: orphan.Process.Name,
+				Cmdline: orphan.Process.Cmdline,
+				Pattern: orphan.Pattern.Name,
+				Score:   orphan.Score,
+				Signals: orphan.Signals,
+				Error:   reason,
+				Action:  "recheck",
+			})
+			continue
+		}
+
 		kr := killer.Kill(
-			orphan.Process.PID,
-			orphan.Process.Name,
+			killer.Identity{
+				PID:        orphan.Process.PID,
+				Name:       orphan.Process.Name,
+				Cmdline:    orphan.Process.Cmdline,
+				CreateTime: orphan.Process.CreateTime,
+			},
 			orphan.Pattern.Signal,
 			gracePeriod,
 			d.cfg.Blocklist,
