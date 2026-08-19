@@ -111,12 +111,13 @@ func (s *Scorer) Score(proc ProcessInfo, pat patterns.Pattern) (float64, map[str
 		total += s.weights.ExceededDur
 	}
 
-	// Listening on port — bound to a network port (potential orphaned server)
-	// Independent of TTY status; the no_tty signal already covers terminal absence
-	if len(proc.Ports) > 0 {
-		signals["has_listener"] = s.weights.HasListener
-		total += s.weights.HasListener
-	}
+	// Deliberately absent: has_listener.
+	//
+	// Holding an open listening socket is evidence a process is doing its job,
+	// not evidence it was abandoned. Scoring it as positive kill evidence
+	// pushed healthy MCP servers and dev servers over the threshold. Ports are
+	// still collected on ProcessInfo and shown in reports; they just no longer
+	// argue for termination.
 
 	// Cap at 1.0
 	if total > 1.0 {

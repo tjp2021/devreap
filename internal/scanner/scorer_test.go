@@ -241,8 +241,9 @@ func TestIDEDetectionClaude(t *testing.T) {
 	}
 }
 
-func TestScorerHasListenerIndependent(t *testing.T) {
-	// has_listener should fire even without PPID=1
+// A listening socket is evidence a process is serving, not evidence it was
+// abandoned. It must never contribute to the orphan score.
+func TestScorerIgnoresListeningPorts(t *testing.T) {
 	scorer := testScorer()
 	scorer.ResetCache([]ProcessInfo{
 		{Name: "Cursor", Cmdline: "/Applications/Cursor.app/Contents/MacOS/Cursor"},
@@ -253,15 +254,22 @@ func TestScorerHasListenerIndependent(t *testing.T) {
 		PPID:       5678, // NOT init
 		Name:       "node",
 		CreateTime: time.Now().Add(-1 * time.Hour),
-		HasTTY:     true, // HAS a TTY — should still fire because it has ports
+		HasTTY:     true,
 		Ports:      []uint32{3000},
 	}
 
 	pat := patterns.Pattern{Name: "test", MaxDuration: 24 * time.Hour}
-	_, signals := scorer.Score(proc, pat)
+	score, signals := scorer.Score(proc, pat)
 
-	if signals["has_listener"] != 0.2 {
-		t.Errorf("expected has_listener = 0.2 (should fire with ports regardless of TTY), got %f", signals["has_listener"])
+	if _, present := signals["has_listener"]; present {
+		t.Errorf("has_listener must not be scored, got %f", signals["has_listener"])
+	}
+	if score != 0 {
+		t.Errorf("a healthy port-bound process with a TTY and a live IDE should score 0, got %f", score)
+	}
+	// Port data is still available to callers for reporting.
+	if len(proc.Ports) != 1 {
+		t.Error("port data should still be present on ProcessInfo")
 	}
 }
 

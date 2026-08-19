@@ -43,7 +43,12 @@ type WeightConfig struct {
 	NoTTY         float64 `yaml:"no_tty"`
 	ParentIDEDead float64 `yaml:"parent_ide_dead"`
 	ExceededDur   float64 `yaml:"exceeded_duration"`
-	HasListener      float64 `yaml:"has_listener"`
+	// HasListener is retained so existing config files still parse, but the
+	// scorer ignores it. A listening socket means a process is serving, not
+	// that it was orphaned. Setting this has no effect.
+	//
+	// Deprecated: no longer contributes to the orphan score.
+	HasListener float64 `yaml:"has_listener"`
 }
 
 // Default returns a Config with all default values.
@@ -72,7 +77,7 @@ func DefaultWeights() WeightConfig {
 		NoTTY:         0.15,
 		ParentIDEDead: 0.3,
 		ExceededDur:   0.25,
-		HasListener:      0.2,
+		HasListener:   0, // deprecated, ignored by the scorer
 	}
 }
 

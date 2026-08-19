@@ -114,8 +114,11 @@ devreap doesn't use binary "is orphan" / "isn't orphan" detection. A process tha
 | `ppid_is_init` | 0.40 | Parent process died — process was reparented to launchd (PPID = 1) |
 | `parent_ide_dead` | 0.30 | No IDE is running anywhere on the machine |
 | `exceeded_duration` | 0.25 | Process has been running longer than its pattern's max duration |
-| `has_listener` | 0.20 | Process is bound to a listening TCP port |
 | `no_tty` | 0.15 | Process has no controlling terminal |
+
+`has_listener` was removed in 0.2.0. A process holding a listening socket is
+doing its job, so binding a port is no longer treated as evidence of
+abandonment. Ports are still collected and shown in `devreap scan` output.
 
 **Examples:**
 - MCP server, PPID=1, no Cursor running → 0.40 + 0.30 = **0.70** → killed
@@ -224,8 +227,8 @@ weights:
   ppid_is_init: 0.4       # Parent process died (PPID = 1)
   parent_ide_dead: 0.3    # No IDE running on this machine
   exceeded_duration: 0.25 # Running longer than pattern's max_duration
-  has_listener: 0.2       # Bound to a TCP listening port
   no_tty: 0.15            # No controlling terminal
+  # has_listener is accepted for backward compatibility but ignored.
 
 # Processes to never kill, by name. Case-insensitive.
 # These are in addition to the built-in protection list (postgres, redis, nginx, sshd, etc.)
