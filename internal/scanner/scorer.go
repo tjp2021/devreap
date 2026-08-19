@@ -17,6 +17,10 @@ import (
 type ideSignature struct {
 	pathContains string // match against cmdline/exe path (most reliable)
 	exactName    string // fallback: exact process name match (no substring!)
+	// execPath matches only when a whole command-line argument is this exact
+	// executable path. Needed for short bin paths: pathContains "/usr/local/
+	// bin/claude" would also match "/usr/local/bin/claude-helper".
+	execPath string
 }
 
 var ideSignatures = []ideSignature{
@@ -32,6 +36,18 @@ var ideSignatures = []ideSignature{
 	// Claude Code CLI — match the actual binary, not anything with "claude" in it
 	{pathContains: "/node_modules/.bin/claude"},
 	{pathContains: "/@anthropic-ai/claude-code"},
+	// Terminal-launched claude. The previous signatures only covered the
+	// npm-installed paths, so a Homebrew or bare-command launch left
+	// parent_ide_dead firing while the agent was sitting right there.
+	{exactName: "claude"},
+	{execPath: "/opt/homebrew/bin/claude"},
+	{execPath: "/usr/local/bin/claude"},
+
+	// Codex CLI
+	{exactName: "codex"},
+	{pathContains: "/@openai/codex/"},
+	{execPath: "/opt/homebrew/bin/codex"},
+	{execPath: "/usr/local/bin/codex"},
 
 	// Windsurf
 	{pathContains: "/Windsurf.app/"},
@@ -190,6 +206,21 @@ func checkIDERunningFromList(procs []ProcessInfo) bool {
 			if sig.exactName != "" && p.Name == sig.exactName {
 				return true
 			}
+			if sig.execPath != "" && hasExecArg(p.Cmdline, sig.execPath) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasExecArg reports whether any whole argument of the command line is exactly
+// the given executable path. Comparing whole arguments keeps
+// "/usr/local/bin/claude-helper" from matching "/usr/local/bin/claude".
+func hasExecArg(cmdline, execPath string) bool {
+	for _, field := range strings.Fields(cmdline) {
+		if field == execPath {
+			return true
 		}
 	}
 	return false

@@ -2,7 +2,7 @@ patterns:
   - name: node-mcp-server
     category: mcp
     command: "^node$"
-    args: "(mcp|model.context|modelcontextprotocol|@modelcontextprotocol)"
+    args: "((^|[^0-9A-Za-z])mcp([^0-9A-Za-z]|$)|model[-_.]context|modelcontextprotocol)"
     max_duration: 4h
     signal: sigterm
     grace_period: 5s
@@ -11,7 +11,7 @@ patterns:
   - name: python-mcp-server
     category: mcp
     command: "^python[0-9.]*$"
-    args: "(mcp|model.context|modelcontextprotocol)"
+    args: "((^|[^0-9A-Za-z])mcp([^0-9A-Za-z]|$)|model[-_.]context|modelcontextprotocol)"
     max_duration: 4h
     signal: sigterm
     grace_period: 5s
@@ -20,7 +20,7 @@ patterns:
   - name: npx-mcp-server
     category: mcp
     command: "^npx$"
-    args: "(mcp|@modelcontextprotocol)"
+    args: "((^|[^0-9A-Za-z])mcp([^0-9A-Za-z]|$)|modelcontextprotocol)"
     max_duration: 4h
     signal: sigterm
     grace_period: 5s
@@ -29,7 +29,7 @@ patterns:
   - name: uvx-mcp-server
     category: mcp
     command: "^uvx$"
-    args: "(mcp|model.context)"
+    args: "((^|[^0-9A-Za-z])mcp([^0-9A-Za-z]|$)|model[-_.]context)"
     max_duration: 4h
     signal: sigterm
     grace_period: 5s
@@ -38,7 +38,7 @@ patterns:
   - name: docker-mcp-server
     category: mcp
     command: "^docker$"
-    args: "run.*(mcp|modelcontextprotocol)"
+    args: "run.*((^|[^0-9A-Za-z])mcp([^0-9A-Za-z]|$)|modelcontextprotocol)"
     max_duration: 4h
     signal: sigterm
     grace_period: 10s
