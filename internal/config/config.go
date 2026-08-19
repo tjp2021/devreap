@@ -26,15 +26,29 @@ type Config struct {
 	// instead of adding to it. Default false: user entries are added to the
 	// built-in list, so writing a blocklist can never remove protection for
 	// postgres, sshd, WindowServer, launchd, and the rest.
-	ReplaceBuiltinBlocklist bool `yaml:"replace_builtin_blocklist"`
-	Notify        NotifyConfig  `yaml:"notify"`
-	Patterns      []string      `yaml:"extra_patterns"` // paths to additional pattern files
-	Weights       WeightConfig  `yaml:"weights"`
+	ReplaceBuiltinBlocklist bool          `yaml:"replace_builtin_blocklist"`
+	Notify                  NotifyConfig  `yaml:"notify"`
+	Patterns                []string      `yaml:"extra_patterns"` // paths to additional pattern files
+	Weights                 WeightConfig  `yaml:"weights"`
+	Hygiene                 HygieneConfig `yaml:"hygiene"`
 }
 
 // NotifyConfig controls macOS notification behavior.
 type NotifyConfig struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+// HygieneConfig names the machine-specific targets for the hygiene audit.
+// Both lists are empty by default and an empty list skips its check. These
+// are paths on one user's machine, so devreap ships no defaults for them.
+type HygieneConfig struct {
+	// GitRepos are paths to git repositories to scan for sensitive tracked
+	// files. A leading "~/" is expanded. Empty skips the check.
+	GitRepos []string `yaml:"git_repos"`
+	// ZombieDotdirs are directory names directly under the home directory
+	// that the user deleted and wants to stay deleted. devreap reports each
+	// one that reappears. Empty skips the check.
+	ZombieDotdirs []string `yaml:"zombie_dotdirs"`
 }
 
 // WeightConfig defines the scoring weights for each orphan detection signal.
@@ -138,6 +152,9 @@ func Load(path string) (*Config, error) {
 
 	cfg.LogDir = expandPath(cfg.LogDir)
 	cfg.PidFile = expandPath(cfg.PidFile)
+	for i, repo := range cfg.Hygiene.GitRepos {
+		cfg.Hygiene.GitRepos[i] = expandPath(repo)
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)

@@ -491,3 +491,82 @@ func TestMergeBlocklistDoesNotMutateDefaults(t *testing.T) {
 		t.Error("mergeBlocklist mutated DefaultBlocklist")
 	}
 }
+
+// The hygiene checks target paths that only exist on one user's machine, so
+// the defaults must stay empty and leave those checks switched off.
+func TestHygieneTargetsDefaultToEmpty(t *testing.T) {
+	cfg := Default()
+
+	if len(cfg.Hygiene.GitRepos) != 0 {
+		t.Errorf("expected no default git repos, got %v", cfg.Hygiene.GitRepos)
+	}
+	if len(cfg.Hygiene.ZombieDotdirs) != 0 {
+		t.Errorf("expected no default zombie dotdirs, got %v", cfg.Hygiene.ZombieDotdirs)
+	}
+}
+
+func TestLoadHygieneTargets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	content := `
+hygiene:
+  git_repos:
+    - ~/code/my-repo
+    - /srv/other-repo
+  zombie_dotdirs:
+    - .dead-tool
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(home, "code/my-repo"), "/srv/other-repo"}
+	if len(cfg.Hygiene.GitRepos) != len(want) {
+		t.Fatalf("expected %d git repos, got %v", len(want), cfg.Hygiene.GitRepos)
+	}
+	for i, repo := range want {
+		if cfg.Hygiene.GitRepos[i] != repo {
+			t.Errorf("git repo %d = %q, want %q", i, cfg.Hygiene.GitRepos[i], repo)
+		}
+	}
+
+	if len(cfg.Hygiene.ZombieDotdirs) != 1 || cfg.Hygiene.ZombieDotdirs[0] != ".dead-tool" {
+		t.Errorf("zombie dotdirs = %v, want [.dead-tool]", cfg.Hygiene.ZombieDotdirs)
+	}
+}
+
+// A config file written for a newer devreap must still load on an older
+// binary. The loader is deliberately non-strict: unknown keys are ignored
+// rather than rejected, so adding a key never breaks a running daemon.
+func TestUnknownConfigKeysAreIgnored(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	content := `
+dry_run: true
+some_future_key: 42
+another:
+  nested: value
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unknown keys must not fail the load, got: %v", err)
+	}
+	if !cfg.DryRun {
+		t.Error("expected dry_run true alongside the unknown keys")
+	}
+}
