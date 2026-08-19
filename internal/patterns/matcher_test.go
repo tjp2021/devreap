@@ -57,7 +57,7 @@ func TestMatchPattern(t *testing.T) {
 			name:    "node MCP server matches",
 			pattern: Pattern{Command: "^node$", Args: "(mcp|modelcontextprotocol)"},
 			cmdName: "node",
-			cmdArgs: "/Users/tim/.npm/mcp-server-fetch/index.js",
+			cmdArgs: "/Users/dev/.npm/mcp-server-fetch/index.js",
 			want:    true,
 		},
 		{
@@ -99,7 +99,7 @@ func TestMatchPattern(t *testing.T) {
 			name:    "next dev matches",
 			pattern: Pattern{Command: "^node$", Args: "next dev"},
 			cmdName: "node",
-			cmdArgs: "/Users/tim/project/node_modules/.bin/next dev",
+			cmdArgs: "/Users/dev/project/node_modules/.bin/next dev",
 			want:    true,
 		},
 	}
