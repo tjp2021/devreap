@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"os/user"
 	"testing"
 	"time"
 
@@ -10,6 +11,22 @@ import (
 
 func testScorer() *Scorer {
 	return NewScorer(config.Default().Weights)
+}
+
+// known marks a fixture's metadata as successfully read, and owns it by the
+// current user unless the fixture set an owner deliberately. Scoring requires
+// positively established ownership and positively read metadata, so fixtures
+// that are not about missing metadata have to say so.
+func known(p ProcessInfo) ProcessInfo {
+	p.CreateTimeKnown = !p.CreateTime.IsZero()
+	p.TTYKnown = true
+	p.UsernameKnown = true
+	if p.Username == "" {
+		if u, err := user.Current(); err == nil {
+			p.Username = u.Username
+		}
+	}
+	return p
 }
 
 func TestScorerPPIDIsInit(t *testing.T) {
@@ -25,7 +42,7 @@ func TestScorerPPIDIsInit(t *testing.T) {
 	}
 
 	pat := patterns.Pattern{Name: "test", MaxDuration: 24 * time.Hour}
-	score, signals := scorer.Score(proc, pat)
+	score, signals := scorer.Score(known(proc), pat)
 
 	if signals["ppid_is_init"] != 0.4 {
 		t.Errorf("expected ppid_is_init signal = 0.4, got %f", signals["ppid_is_init"])
@@ -49,7 +66,7 @@ func TestScorerNoTTY(t *testing.T) {
 	}
 
 	pat := patterns.Pattern{Name: "test", MaxDuration: 24 * time.Hour}
-	_, signals := scorer.Score(proc, pat)
+	_, signals := scorer.Score(known(proc), pat)
 
 	if signals["no_tty"] != 0.15 {
 		t.Errorf("expected no_tty signal = 0.15, got %f", signals["no_tty"])
@@ -69,7 +86,7 @@ func TestScorerExceededDuration(t *testing.T) {
 	}
 
 	pat := patterns.Pattern{Name: "ffmpeg", MaxDuration: 2 * time.Hour}
-	_, signals := scorer.Score(proc, pat)
+	_, signals := scorer.Score(known(proc), pat)
 
 	if signals["exceeded_duration"] != 0.25 {
 		t.Errorf("expected exceeded_duration signal = 0.25, got %f", signals["exceeded_duration"])
@@ -89,7 +106,7 @@ func TestScorerNotExceededDuration(t *testing.T) {
 	}
 
 	pat := patterns.Pattern{Name: "ffmpeg", MaxDuration: 2 * time.Hour}
-	_, signals := scorer.Score(proc, pat)
+	_, signals := scorer.Score(known(proc), pat)
 
 	if _, ok := signals["exceeded_duration"]; ok {
 		t.Error("expected no exceeded_duration signal for process within time limit")
@@ -113,7 +130,7 @@ func TestScorerOrphanExample(t *testing.T) {
 	}
 
 	pat := patterns.Pattern{Name: "mcp-server", MaxDuration: 4 * time.Hour}
-	score, signals := scorer.Score(proc, pat)
+	score, signals := scorer.Score(known(proc), pat)
 
 	// PPID=1 (0.4) + no TTY (0.15) + no IDE (0.3) = 0.85
 	expectedMin := 0.85
@@ -139,7 +156,7 @@ func TestScorerSafeProcess(t *testing.T) {
 	}
 
 	pat := patterns.Pattern{Name: "mcp-server", MaxDuration: 4 * time.Hour}
-	score, _ := scorer.Score(proc, pat)
+	score, _ := scorer.Score(known(proc), pat)
 
 	if score != 0 {
 		t.Errorf("expected score 0 for safe process, got %f", score)
@@ -162,7 +179,7 @@ func TestScorerCap(t *testing.T) {
 	}
 
 	pat := patterns.Pattern{Name: "test", MaxDuration: 1 * time.Hour}
-	score, _ := scorer.Score(proc, pat)
+	score, _ := scorer.Score(known(proc), pat)
 
 	if score > 1.0 {
 		t.Errorf("score should be capped at 1.0, got %f", score)
@@ -259,7 +276,7 @@ func TestScorerIgnoresListeningPorts(t *testing.T) {
 	}
 
 	pat := patterns.Pattern{Name: "test", MaxDuration: 24 * time.Hour}
-	score, signals := scorer.Score(proc, pat)
+	score, signals := scorer.Score(known(proc), pat)
 
 	if _, present := signals["has_listener"]; present {
 		t.Errorf("has_listener must not be scored, got %f", signals["has_listener"])
@@ -289,9 +306,89 @@ func TestScorerSkipsOtherUsers(t *testing.T) {
 	}
 
 	pat := patterns.Pattern{Name: "test", MaxDuration: 1 * time.Hour}
-	score, _ := scorer.Score(proc, pat)
+	score, _ := scorer.Score(known(proc), pat)
 
 	if score != 0 {
 		t.Errorf("expected score 0 for other user's process, got %f", score)
+	}
+}
+
+// Unknown metadata must never be read as incriminating metadata. gopsutil
+// returns a zero value plus an error for processes it cannot inspect, and the
+// scorer used to treat those zero values as facts.
+
+// A process whose start time could not be read used to appear to have started
+// at the Unix epoch, so exceeded_duration fired on every single scan.
+func TestUnknownStartTimeDoesNotFireExceededDuration(t *testing.T) {
+	scorer := testScorer()
+	scorer.ResetCache(nil)
+
+	proc := known(ProcessInfo{
+		PID:  1234,
+		PPID: 5678,
+		Name: "node",
+	})
+	proc.CreateTime = time.Time{}
+	proc.CreateTimeKnown = false
+
+	pat := patterns.Pattern{Name: "test", MaxDuration: 1 * time.Hour}
+	_, signals := scorer.Score(proc, pat)
+
+	if _, fired := signals["exceeded_duration"]; fired {
+		t.Error("exceeded_duration must not fire when the start time is unknown")
+	}
+	if proc.Age() != 0 {
+		t.Errorf("Age() must be 0 when the start time is unknown, got %v", proc.Age())
+	}
+}
+
+// A failed terminal lookup is not the same as having no terminal.
+func TestUnknownTTYDoesNotFireNoTTY(t *testing.T) {
+	scorer := testScorer()
+	scorer.ResetCache(nil)
+
+	proc := known(ProcessInfo{
+		PID:        1234,
+		PPID:       5678,
+		Name:       "node",
+		CreateTime: time.Now().Add(-1 * time.Hour),
+	})
+	proc.HasTTY = false
+	proc.TTYKnown = false
+
+	pat := patterns.Pattern{Name: "test", MaxDuration: 24 * time.Hour}
+	_, signals := scorer.Score(proc, pat)
+
+	if _, fired := signals["no_tty"]; fired {
+		t.Error("no_tty must not fire when the terminal could not be read")
+	}
+}
+
+// An unreadable owner used to slip past the ownership guard entirely, because
+// the guard only rejected a username that was both known and different.
+func TestUnknownOwnerIsNotKillEligible(t *testing.T) {
+	scorer := testScorer()
+	scorer.ResetCache([]ProcessInfo{
+		{Name: "Finder", Cmdline: "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"},
+	})
+
+	// Every other signal is maximally incriminating.
+	proc := ProcessInfo{
+		PID:             1234,
+		PPID:            1,
+		Name:            "node",
+		CreateTime:      time.Now().Add(-100 * time.Hour),
+		CreateTimeKnown: true,
+		HasTTY:          false,
+		TTYKnown:        true,
+		Username:        "",
+		UsernameKnown:   false,
+	}
+
+	pat := patterns.Pattern{Name: "test", MaxDuration: 1 * time.Hour}
+	score, _ := scorer.Score(proc, pat)
+
+	if score != 0 {
+		t.Errorf("a process with an unreadable owner must score 0, got %f", score)
 	}
 }

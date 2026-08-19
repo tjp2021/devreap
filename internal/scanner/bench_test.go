@@ -26,7 +26,7 @@ func BenchmarkScore(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scorer.Score(proc, pat)
+		scorer.Score(known(proc), pat)
 	}
 }
 

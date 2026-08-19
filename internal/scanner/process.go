@@ -11,21 +11,44 @@ import (
 )
 
 // ProcessInfo holds metadata about a running process, collected via gopsutil.
+//
+// The *Known fields record whether each lookup actually succeeded. gopsutil
+// returns a zero value and an error for processes it cannot inspect, and a
+// zero value is indistinguishable from a real answer. Treating "unknown" as
+// a real answer made devreap kill processes it knew nothing about, so every
+// consumer must check the corresponding *Known flag before drawing a
+// conclusion from the value.
 type ProcessInfo struct {
-	PID        int32
-	PPID       int32
-	Name       string
-	Cmdline    string
-	Args       string
+	PID     int32
+	PPID    int32
+	Name    string
+	Cmdline string
+	Args    string
+
 	CreateTime time.Time
-	HasTTY     bool
-	Ports      []uint32
-	Username   string
-	MemRSS     uint64
+	// CreateTimeKnown is false when the start time could not be read.
+	CreateTimeKnown bool
+
+	HasTTY bool
+	// TTYKnown is false when the terminal could not be read. Distinguishes
+	// "no controlling terminal" from "could not determine".
+	TTYKnown bool
+
+	Ports    []uint32
+	Username string
+	// UsernameKnown is false when the owner could not be determined.
+	UsernameKnown bool
+
+	MemRSS uint64
 }
 
 // Age returns how long the process has been running.
+// It returns 0 when the start time is unknown. Callers that need to
+// distinguish "just started" from "unknown" must check CreateTimeKnown.
 func (p *ProcessInfo) Age() time.Duration {
+	if !p.CreateTimeKnown {
+		return 0
+	}
 	return time.Since(p.CreateTime)
 }
 
@@ -67,9 +90,12 @@ func processToInfo(p *process.Process, portMap map[int32][]uint32) *ProcessInfo 
 
 	ppid, _ := p.Ppid()
 	cmdline, _ := p.Cmdline()
-	createMs, _ := p.CreateTime()
-	terminal, _ := p.Terminal()
-	username, _ := p.Username()
+
+	// Each of these can fail. Record success separately so downstream code
+	// can tell a real answer from a missing one.
+	createMs, createErr := p.CreateTime()
+	terminal, terminalErr := p.Terminal()
+	username, usernameErr := p.Username()
 
 	var memRSS uint64
 	memInfo, err := p.MemoryInfo()
@@ -77,9 +103,10 @@ func processToInfo(p *process.Process, portMap map[int32][]uint32) *ProcessInfo 
 		memRSS = memInfo.RSS
 	}
 
-	createTime := time.UnixMilli(createMs)
-	if createMs == 0 {
-		createTime = time.Time{}
+	createTime := time.Time{}
+	createTimeKnown := createErr == nil && createMs > 0
+	if createTimeKnown {
+		createTime = time.UnixMilli(createMs)
 	}
 
 	args := ""
@@ -89,16 +116,19 @@ func processToInfo(p *process.Process, portMap map[int32][]uint32) *ProcessInfo 
 	}
 
 	return &ProcessInfo{
-		PID:        p.Pid,
-		PPID:       ppid,
-		Name:       name,
-		Cmdline:    cmdline,
-		Args:       args,
-		CreateTime: createTime,
-		HasTTY:     terminal != "",
-		Ports:      portMap[p.Pid],
-		Username:   username,
-		MemRSS:     memRSS,
+		PID:             p.Pid,
+		PPID:            ppid,
+		Name:            name,
+		Cmdline:         cmdline,
+		Args:            args,
+		CreateTime:      createTime,
+		CreateTimeKnown: createTimeKnown,
+		HasTTY:          terminalErr == nil && terminal != "",
+		TTYKnown:        terminalErr == nil,
+		Ports:           portMap[p.Pid],
+		Username:        username,
+		UsernameKnown:   usernameErr == nil && username != "",
+		MemRSS:          memRSS,
 	}
 }
 

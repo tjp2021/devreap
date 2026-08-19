@@ -245,13 +245,13 @@ func TestScorerResetCache(t *testing.T) {
 	})
 	proc := ProcessInfo{PID: 1, PPID: 1, Name: "node", CreateTime: time.Now()}
 	pat := patterns.Pattern{Name: "test", MaxDuration: 24 * time.Hour}
-	score1, _ := scorer.Score(proc, pat)
+	score1, _ := scorer.Score(known(proc), pat)
 
 	// Second scan: IDE is running
 	scorer.ResetCache([]ProcessInfo{
 		{Name: "Cursor", Cmdline: "/Applications/Cursor.app/Contents/MacOS/Cursor"},
 	})
-	score2, _ := scorer.Score(proc, pat)
+	score2, _ := scorer.Score(known(proc), pat)
 
 	// Score should be different because IDE state changed
 	if score1 == score2 {

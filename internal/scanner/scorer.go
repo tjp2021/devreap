@@ -82,9 +82,13 @@ func (s *Scorer) Score(proc ProcessInfo, pat patterns.Pattern) (float64, map[str
 	signals := make(map[string]float64)
 	total := 0.0
 
-	// Skip processes not owned by current user
-	if s.currentUser != "" && proc.Username != "" && proc.Username != s.currentUser {
-		return 0, signals
+	// Ownership must be positively established. An unreadable owner used to
+	// fall through this guard and leave the process eligible for killing;
+	// now it disqualifies the process outright.
+	if s.currentUser != "" {
+		if !proc.UsernameKnown || proc.Username != s.currentUser {
+			return 0, signals
+		}
 	}
 
 	// PPID is 1 (launchd) — parent died
@@ -93,8 +97,9 @@ func (s *Scorer) Score(proc ProcessInfo, pat patterns.Pattern) (float64, map[str
 		total += s.weights.PPIDIsInit
 	}
 
-	// No controlling terminal
-	if !proc.HasTTY {
+	// No controlling terminal. Only fires when the terminal was actually
+	// read; a failed lookup is not evidence of a missing terminal.
+	if proc.TTYKnown && !proc.HasTTY {
 		signals["no_tty"] = s.weights.NoTTY
 		total += s.weights.NoTTY
 	}
@@ -105,8 +110,10 @@ func (s *Scorer) Score(proc ProcessInfo, pat patterns.Pattern) (float64, map[str
 		total += s.weights.ParentIDEDead
 	}
 
-	// Exceeded max duration
-	if pat.MaxDuration > 0 && proc.Age() > pat.MaxDuration {
+	// Exceeded max duration. An unknown start time used to read as a zero
+	// timestamp, making every such process appear decades old and firing
+	// this signal unconditionally.
+	if proc.CreateTimeKnown && pat.MaxDuration > 0 && proc.Age() > pat.MaxDuration {
 		signals["exceeded_duration"] = s.weights.ExceededDur
 		total += s.weights.ExceededDur
 	}
