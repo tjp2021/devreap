@@ -12,7 +12,10 @@ const (
 	DefaultMaxLogFiles    = 5
 	DefaultPidFile        = "~/.local/share/devreap/daemon.pid"
 	DefaultNotifyEnabled  = true
-	DefaultDryRun         = false
+	// DefaultDryRun is true so a fresh install observes and reports without
+	// killing anything. Killing is opt-in: the user sets dry_run: false only
+	// after reviewing what devreap would have killed on their machine.
+	DefaultDryRun = true
 )
 
 var DefaultBlocklist = []string{

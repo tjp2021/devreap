@@ -31,6 +31,32 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+// A fresh install must observe, not kill. Flipping this default is a breaking
+// safety change, so it gets its own test rather than riding along in a
+// broader assertion.
+func TestDefaultIsObserveOnly(t *testing.T) {
+	if !Default().DryRun {
+		t.Fatal("default config must be dry-run; killing is opt-in")
+	}
+}
+
+// A config file that never mentions dry_run must stay observe-only.
+func TestDryRunStaysTrueWhenConfigOmitsIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("scan_interval: 45s\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.DryRun {
+		t.Error("dry_run must remain true when the config file omits it")
+	}
+}
+
 func TestDefaultConfigValidates(t *testing.T) {
 	cfg := Default()
 	if err := cfg.Validate(); err != nil {

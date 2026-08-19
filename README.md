@@ -187,14 +187,19 @@ devreap version                # Print version, commit, and build date
 
 devreap works out of the box with no config file. Create `~/.config/devreap/config.yaml` only if you need to change something.
 
+**devreap starts in observe-only mode.** With no config file, `dry_run` is `true`: devreap
+logs what it *would* kill and kills nothing. Killing is opt-in. Run it for a few days, read
+`devreap logs`, confirm every candidate is genuinely an orphan, then set `dry_run: false`.
+Run `devreap status` at any time to see which mode you are in.
+
 ```yaml
 scan_interval: 30s       # How often to scan. Min: 1s. Max: 24h.
 kill_threshold: 0.6      # Minimum score to kill a process. Range: 0.1 - 1.0.
                          # Lower = more aggressive. Higher = more conservative.
 grace_period: 5s         # How long to wait between signals (SIGTERM → wait → SIGKILL).
                          # Min: 1s. Give processes time to clean up before force-killing.
-dry_run: false           # If true, logs what would be killed but doesn't kill anything.
-                         # Useful for testing — run `devreap logs` to see what it caught.
+dry_run: true            # DEFAULT. Logs what would be killed but kills nothing.
+                         # Set to false only after reviewing `devreap logs`.
 
 notify:
   enabled: true          # macOS notifications when the daemon kills something.
@@ -267,7 +272,7 @@ Run `devreap scan -v` — this shows all processes matching a pattern, even ones
 
 **I want to test what it would kill before letting it run for real**
 
-Set `dry_run: true` in your config, then run `devreap start`. It will log everything it *would* kill to `devreap logs` without actually killing anything. Review the logs and adjust config, then set `dry_run: false`.
+That is the default. devreap ships with `dry_run: true`, so a fresh install already logs everything it *would* kill to `devreap logs` without killing anything. Review the logs, adjust config, then set `dry_run: false` when you trust the candidates.
 
 **A process isn't matching any pattern**
 

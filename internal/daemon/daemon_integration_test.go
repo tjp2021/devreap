@@ -71,6 +71,9 @@ func testConfig(t *testing.T) *config.Config {
 	cfg.ScanInterval = 100 * time.Millisecond
 	cfg.PidFile = filepath.Join(dir, "devreap.pid")
 	cfg.LogDir = filepath.Join(dir, "logs")
+	// Kill mode is opt-in since dry_run defaults to true. These integration
+	// tests exercise the kill path, so they must ask for it explicitly.
+	cfg.DryRun = false
 	return cfg
 }
 

@@ -41,6 +41,12 @@ var statusCmd = &cobra.Command{
 			fmt.Println("LaunchAgent:  not installed")
 		}
 
+		if cfg.DryRun {
+			fmt.Println("Mode:         observe-only (dry-run) — nothing is killed")
+		} else {
+			fmt.Println("Mode:         ACTIVE — matching processes will be killed")
+		}
+
 		fmt.Printf("Patterns:     %d loaded\n", registry.Count())
 		fmt.Printf("Threshold:    %.2f\n", cfg.KillThreshold)
 		fmt.Printf("Interval:     %s\n", cfg.ScanInterval)
