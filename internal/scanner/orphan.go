@@ -13,6 +13,15 @@ type OrphanCandidate struct {
 	Pattern patterns.Pattern
 	Score   float64
 	Signals map[string]float64 // signal name → contribution
+
+	// KillEligible reports whether at least one strong lifecycle signal fired.
+	// A candidate can score above the threshold on weak signals alone; such a
+	// candidate is reportable but must never be killed. See strongSignals.
+	//
+	// This field is for reporting. Enforcement derives the same answer from
+	// Signals via HasStrongSignal, so a candidate built without this field set
+	// is still gated.
+	KillEligible bool
 }
 
 // Reasons returns the names of signals that contributed to this candidate's score.
@@ -42,10 +51,11 @@ func FindAllMatches(procs []ProcessInfo, registry *patterns.Registry, scorer *Sc
 
 		score, signals := scorer.Score(proc, match.Pattern)
 		candidates = append(candidates, OrphanCandidate{
-			Process: proc,
-			Pattern: match.Pattern,
-			Score:   score,
-			Signals: signals,
+			Process:      proc,
+			Pattern:      match.Pattern,
+			Score:        score,
+			Signals:      signals,
+			KillEligible: HasStrongSignal(signals),
 		})
 	}
 	return candidates

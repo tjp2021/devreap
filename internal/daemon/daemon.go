@@ -129,6 +129,26 @@ func (d *Daemon) scanAndKill() {
 
 	var killed []string
 	for _, orphan := range result.Orphans {
+		// Weak signals alone describe a working machine, not an orphan. A
+		// candidate can clear the score threshold on circumstantial evidence;
+		// without a strong lifecycle signal it is reported, never killed.
+		//
+		// This is derived from the signal data rather than read from the
+		// candidate's KillEligible field, so the gate cannot be bypassed by a
+		// caller that builds a candidate without setting the field.
+		if !scanner.HasStrongSignal(orphan.Signals) {
+			d.log.Info("suspicious, not killable (no strong signal)", logger.Entry{
+				PID:     orphan.Process.PID,
+				Process: orphan.Process.Name,
+				Cmdline: orphan.Process.Cmdline,
+				Pattern: orphan.Pattern.Name,
+				Score:   orphan.Score,
+				Signals: orphan.Signals,
+				Action:  "report",
+			})
+			continue
+		}
+
 		if d.cfg.DryRun {
 			d.log.Info("would kill (dry-run)", logger.Entry{
 				PID:     orphan.Process.PID,

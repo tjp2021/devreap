@@ -392,3 +392,65 @@ func TestUnknownOwnerIsNotKillEligible(t *testing.T) {
 		t.Errorf("a process with an unreadable owner must score 0, got %f", score)
 	}
 }
+
+// The strong-signal gate. On 2026-08-14 this daemon killed live MCP servers
+// and dev processes on weak signals alone: every kill in the log scored 0.70
+// from exceeded_duration + no_tty + parent_ide_dead, with ppid_is_init absent.
+// The processes had not lost their parents; the user had merely closed an
+// editor somewhere on the machine.
+func TestWeakSignalsAloneAreNotKillEligible(t *testing.T) {
+	scorer := testScorer()
+	// No IDE anywhere on the machine, so parent_ide_dead fires for everything.
+	scorer.ResetCache([]ProcessInfo{
+		{Name: "Finder", Cmdline: "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"},
+	})
+
+	proc := known(ProcessInfo{
+		PID:        1234,
+		PPID:       5678, // real live parent — NOT reparented to launchd
+		Name:       "node",
+		Cmdline:    "node /Users/dev/.npm/_npx/abc/node_modules/.bin/mcp-youtube-transcript",
+		CreateTime: time.Now().Add(-9 * time.Hour),
+		HasTTY:     false,
+	})
+
+	pat := patterns.Pattern{Name: "node-mcp-server", MaxDuration: 4 * time.Hour}
+	score, signals := scorer.Score(proc, pat)
+
+	// The weak signals still fire, and still clear the 0.6 threshold. That is
+	// exactly the shape of the 2026-08-14 kills.
+	if score < 0.6 {
+		t.Fatalf("expected the weak signals to still clear the threshold, got %f", score)
+	}
+	if signals["ppid_is_init"] != 0 {
+		t.Fatal("fixture is wrong: ppid_is_init must not fire for a process with a live parent")
+	}
+
+	// But it must not be killable.
+	if HasStrongSignal(signals) {
+		t.Error("weak signals alone must not make a process kill-eligible")
+	}
+}
+
+// The same process, once genuinely reparented to launchd, is killable.
+func TestStrongSignalMakesCandidateKillEligible(t *testing.T) {
+	scorer := testScorer()
+	scorer.ResetCache([]ProcessInfo{
+		{Name: "Finder", Cmdline: "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"},
+	})
+
+	proc := known(ProcessInfo{
+		PID:        1234,
+		PPID:       1, // reparented to launchd — the parent really did die
+		Name:       "node",
+		CreateTime: time.Now().Add(-9 * time.Hour),
+		HasTTY:     false,
+	})
+
+	pat := patterns.Pattern{Name: "node-mcp-server", MaxDuration: 4 * time.Hour}
+	_, signals := scorer.Score(proc, pat)
+
+	if !HasStrongSignal(signals) {
+		t.Error("ppid_is_init must make a candidate kill-eligible")
+	}
+}

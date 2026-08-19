@@ -78,16 +78,20 @@ type orphanOutput struct {
 	Score   float64            `json:"score"`
 	Age     string             `json:"age"`
 	Signals map[string]float64 `json:"signals"`
+	// KillEligible is false when the candidate cleared the score threshold on
+	// weak signals alone. Such a candidate is reported but never killed.
+	KillEligible bool `json:"kill_eligible"`
 }
 
 func toOrphanOutput(o scanner.OrphanCandidate) orphanOutput {
 	return orphanOutput{
-		PID:     o.Process.PID,
-		Name:    o.Process.Name,
-		Pattern: o.Pattern.Name,
-		Score:   o.Score,
-		Age:     o.Process.Age().Truncate(time.Second).String(),
-		Signals: o.Signals,
+		PID:          o.Process.PID,
+		Name:         o.Process.Name,
+		Pattern:      o.Pattern.Name,
+		Score:        o.Score,
+		Age:          o.Process.Age().Truncate(time.Second).String(),
+		Signals:      o.Signals,
+		KillEligible: o.KillEligible,
 	}
 }
 
@@ -155,8 +159,12 @@ func printOrphanTable(entries []scanner.OrphanCandidate, showStatus bool) {
 
 		if showStatus {
 			status := "safe"
-			if o.Score >= cfg.KillThreshold {
+			switch {
+			case o.Score >= cfg.KillThreshold && o.KillEligible:
 				status = "KILL"
+			case o.Score >= cfg.KillThreshold:
+				// Above threshold on weak signals only — reported, never killed.
+				status = "watch"
 			}
 			fmt.Fprintf(w, "%d\t%s\t%s\t%.2f\t%s\t%s\t%s\n",
 				o.Process.PID,

@@ -458,3 +458,66 @@ func TestIsInstalled_NotInstalled(t *testing.T) {
 	// We can at least call it without panicking.
 	_ = IsInstalled()
 }
+
+// Regression for the 2026-08-14 incident: the daemon killed live MCP servers
+// scoring 0.70 from exceeded_duration + no_tty + parent_ide_dead, with
+// ppid_is_init absent. Those processes still had live parents. Even in kill
+// mode, a candidate without a strong lifecycle signal must survive.
+func TestDaemonRun_WeakSignalsAloneDoNotKill(t *testing.T) {
+	cfg := testConfig(t) // kill mode
+	cfg.DryRun = false
+
+	cmd := exec.Command("sleep", "3600")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start sleep: %v", err)
+	}
+	sleepPID := int32(cmd.Process.Pid)
+	go cmd.Wait()
+	t.Cleanup(func() {
+		cmd.Process.Signal(syscall.SIGKILL)
+	})
+
+	ms := &mockScanner{
+		result: &scanner.ScanResult{
+			TotalProcesses: 100,
+			Matched:        1,
+			Orphans: []scanner.OrphanCandidate{
+				{
+					Process: scanner.ProcessInfo{
+						PID:     sleepPID,
+						Name:    "sleep",
+						Cmdline: "node /Users/dev/.npm/_npx/abc/node_modules/.bin/mcp-youtube-transcript",
+					},
+					Pattern: patterns.Pattern{
+						Name:   "node-mcp-server",
+						Signal: patterns.SignalTERM,
+					},
+					// Exactly the 2026-08-14 shape: over threshold, no ppid_is_init.
+					Score:   0.70,
+					Signals: map[string]float64{"exceeded_duration": 0.25, "no_tty": 0.15, "parent_ide_dead": 0.3},
+				},
+			},
+		},
+	}
+	log := logger.NewStdout()
+	notif := &mockNotifier{}
+
+	d := New(cfg, ms, log, notif)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- d.Run()
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	d.Stop()
+	<-done
+
+	proc, _ := os.FindProcess(int(sleepPID))
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		t.Error("process with only weak signals must not be killed")
+	}
+	if len(notif.Messages()) > 0 {
+		t.Error("nothing was killed, so no notification should be sent")
+	}
+}

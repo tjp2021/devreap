@@ -49,6 +49,34 @@ var ideSignatures = []ideSignature{
 	{pathContains: "/Xcode.app/Contents/MacOS/Xcode"},
 }
 
+// strongSignals are the signals that are direct evidence a process lost its
+// parent, rather than circumstantial evidence about the machine as a whole.
+//
+// Only ppid_is_init qualifies today. The others are weak:
+//
+//   - parent_ide_dead is global, not ancestral. It asks whether any IDE is
+//     running anywhere on the machine, so closing one editor makes it fire for
+//     every matched process, including ones launched from a terminal.
+//   - no_tty is normal for any process started by a launcher or a daemon.
+//   - exceeded_duration is a statement about age, not about abandonment. A
+//     long-lived server is doing its job.
+//
+// A process is only killable when at least one strong signal is present. Weak
+// signals can raise a process for reporting, but on their own they describe a
+// working machine, not an orphan.
+var strongSignals = []string{"ppid_is_init"}
+
+// HasStrongSignal reports whether a scored signal set contains direct evidence
+// that the process lost its parent.
+func HasStrongSignal(signals map[string]float64) bool {
+	for _, name := range strongSignals {
+		if signals[name] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // Scorer computes orphan likelihood scores for processes using weighted signals.
 type Scorer struct {
 	weights  config.WeightConfig
