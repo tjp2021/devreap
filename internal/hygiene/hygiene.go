@@ -260,23 +260,35 @@ func (c *Checker) checkZombieDotdirs(r *Result) {
 	}
 }
 
-// 5. Sensitive files tracked in git (YNG repo)
+// sensitiveFilePatterns match the base name of a tracked file that usually
+// holds a credential or an exported conversation. They are generic on
+// purpose: a name here must be suspicious in any repository.
+var sensitiveFilePatterns = []string{
+	"*_messages.csv",
+	"*_messages.txt",
+	"client_secret_*.json",
+	"*.session",
+}
+
+// 5. Sensitive files tracked in git.
+//
+// Which repositories to scan is specific to one machine, so the list comes
+// from hygiene.git_repos in the config. An empty list skips the check.
 func (c *Checker) checkSensitiveFiles(r *Result) {
-	yngDir := filepath.Join(c.homeDir, "YNG")
-	if _, err := os.Stat(yngDir); os.IsNotExist(err) {
-		return
+	for _, repo := range c.cfg.GitRepos {
+		repo = strings.TrimSpace(repo)
+		if repo == "" {
+			continue
+		}
+		if _, err := os.Stat(repo); err != nil {
+			continue
+		}
+		c.checkRepoSensitiveFiles(r, repo)
 	}
+}
 
-	patterns := []string{
-		"whoop-credentials.json",
-		"whoop-tokens.json",
-		"*_messages.csv",
-		"*_messages.txt",
-		"client_secret_*.json",
-		"*.session",
-	}
-
-	out, err := exec.Command("git", "-C", yngDir, "ls-files", "-z").Output()
+func (c *Checker) checkRepoSensitiveFiles(r *Result, repo string) {
+	out, err := exec.Command("git", "-C", repo, "ls-files", "-z").Output()
 	if err != nil {
 		return
 	}
@@ -285,10 +297,11 @@ func (c *Checker) checkSensitiveFiles(r *Result) {
 			continue
 		}
 		base := filepath.Base(tracked)
-		for _, pattern := range patterns {
+		for _, pattern := range sensitiveFilePatterns {
 			matched, matchErr := filepath.Match(pattern, base)
 			if matchErr == nil && matched {
-				c.addIssue(r, "SENSITIVE_FILE", fmt.Sprintf("git-tracked: %s", tracked))
+				c.addIssue(r, "SENSITIVE_FILE",
+					fmt.Sprintf("git-tracked in %s: %s", repo, tracked))
 				break
 			}
 		}

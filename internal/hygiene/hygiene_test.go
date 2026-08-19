@@ -282,3 +282,125 @@ func TestDirSizeMB(t *testing.T) {
 		t.Errorf("expected non-negative size, got %d", mb)
 	}
 }
+
+// newTestRepo creates a git repository containing the given files and
+// returns its path. Every file is committed so it is tracked.
+func newTestRepo(t *testing.T, files ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	run("init", "-q")
+	for _, name := range files {
+		path := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("add", "-A")
+	run("commit", "-q", "-m", "fixture")
+	return repo
+}
+
+func TestCheckSensitiveFilesFlagsTrackedSecrets(t *testing.T) {
+	repo := newTestRepo(t, "client_secret_123.json", "README.md")
+	c := &Checker{
+		homeDir: t.TempDir(),
+		cfg:     config.HygieneConfig{GitRepos: []string{repo}},
+	}
+
+	r := &Result{}
+	c.checkSensitiveFiles(r)
+
+	if len(r.Issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d: %+v", len(r.Issues), r.Issues)
+	}
+	if r.Issues[0].Check != "SENSITIVE_FILE" {
+		t.Errorf("expected SENSITIVE_FILE check, got %s", r.Issues[0].Check)
+	}
+	if !strings.Contains(r.Issues[0].Message, repo) {
+		t.Errorf("issue %q does not name the repository %q", r.Issues[0].Message, repo)
+	}
+	if !strings.Contains(r.Issues[0].Message, "client_secret_123.json") {
+		t.Errorf("issue %q does not name the file", r.Issues[0].Message)
+	}
+}
+
+func TestCheckSensitiveFilesScansEveryConfiguredRepo(t *testing.T) {
+	first := newTestRepo(t, "export_messages.csv")
+	second := newTestRepo(t, "creds.session")
+	c := &Checker{
+		homeDir: t.TempDir(),
+		cfg:     config.HygieneConfig{GitRepos: []string{first, second}},
+	}
+
+	r := &Result{}
+	c.checkSensitiveFiles(r)
+
+	if len(r.Issues) != 2 {
+		t.Fatalf("expected 1 issue per repo, got %d: %+v", len(r.Issues), r.Issues)
+	}
+}
+
+func TestCheckSensitiveFilesIgnoresCleanRepo(t *testing.T) {
+	repo := newTestRepo(t, "main.go", "README.md")
+	c := &Checker{
+		homeDir: t.TempDir(),
+		cfg:     config.HygieneConfig{GitRepos: []string{repo}},
+	}
+
+	r := &Result{}
+	c.checkSensitiveFiles(r)
+
+	if len(r.Issues) != 0 {
+		t.Fatalf("expected 0 issues, got %d: %+v", len(r.Issues), r.Issues)
+	}
+}
+
+// With no configured repositories the check does no work at all. It must
+// not guess at a repository path under the home directory.
+func TestCheckSensitiveFilesSkippedWhenUnconfigured(t *testing.T) {
+	home := t.TempDir()
+	repo := newTestRepo(t, "client_secret_123.json")
+	if err := os.Rename(repo, filepath.Join(home, "vault")); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Result{}
+	(&Checker{homeDir: home}).checkSensitiveFiles(r)
+
+	if len(r.Issues) != 0 {
+		t.Fatalf("expected 0 issues without configured repos, got %d: %+v", len(r.Issues), r.Issues)
+	}
+}
+
+func TestCheckSensitiveFilesSkipsMissingRepo(t *testing.T) {
+	c := &Checker{
+		homeDir: t.TempDir(),
+		cfg:     config.HygieneConfig{GitRepos: []string{"/nonexistent/repo/abc123"}},
+	}
+
+	r := &Result{}
+	c.checkSensitiveFiles(r)
+
+	if len(r.Issues) != 0 {
+		t.Fatalf("expected 0 issues for a missing repo, got %d", len(r.Issues))
+	}
+}
