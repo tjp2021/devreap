@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tjp2021/devreap/internal/config"
 )
 
 func TestNewChecker(t *testing.T) {
-	c, err := New()
+	c, err := New(config.HygieneConfig{})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -21,7 +23,7 @@ func TestNewChecker(t *testing.T) {
 }
 
 func TestRunAll(t *testing.T) {
-	c, err := New()
+	c, err := New(config.HygieneConfig{})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -119,12 +121,13 @@ func TestCheckBrokenLaunchAgentsSkipsHealthyAgent(t *testing.T) {
 }
 
 func TestCheckZombieDotdirs(t *testing.T) {
-	// Create a temp dir to simulate a zombie dotdir
 	tmpHome := t.TempDir()
-	c := &Checker{homeDir: tmpHome}
+	c := &Checker{
+		homeDir: tmpHome,
+		cfg:     config.HygieneConfig{ZombieDotdirs: []string{".dead-tool"}},
+	}
 
-	// Create one of the known dead dirs
-	zombieDir := filepath.Join(tmpHome, ".clawdbot")
+	zombieDir := filepath.Join(tmpHome, ".dead-tool")
 	if err := os.MkdirAll(zombieDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -140,15 +143,37 @@ func TestCheckZombieDotdirs(t *testing.T) {
 	if r.Issues[0].Check != "ZOMBIE_DOTDIR" {
 		t.Errorf("expected ZOMBIE_DOTDIR check, got %s", r.Issues[0].Check)
 	}
+	if !strings.Contains(r.Issues[0].Message, zombieDir) {
+		t.Errorf("issue %q does not name the directory %q", r.Issues[0].Message, zombieDir)
+	}
 }
 
 func TestCheckZombieDotdirs_Clean(t *testing.T) {
-	c := &Checker{homeDir: t.TempDir()}
+	c := &Checker{
+		homeDir: t.TempDir(),
+		cfg:     config.HygieneConfig{ZombieDotdirs: []string{".dead-tool"}},
+	}
 	r := &Result{}
 	c.checkZombieDotdirs(r)
 
 	if len(r.Issues) != 0 {
 		t.Fatalf("expected 0 issues, got %d", len(r.Issues))
+	}
+}
+
+// With no configured dotdirs the check reports nothing, even when a
+// directory that another user might call dead is sitting right there.
+func TestCheckZombieDotdirsSkippedWhenUnconfigured(t *testing.T) {
+	tmpHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".some-tool"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Result{}
+	(&Checker{homeDir: tmpHome}).checkZombieDotdirs(r)
+
+	if len(r.Issues) != 0 {
+		t.Fatalf("expected 0 issues without configured dotdirs, got %d", len(r.Issues))
 	}
 }
 

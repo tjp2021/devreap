@@ -20,7 +20,7 @@ Claude debug/telemetry accumulation, and low disk space.
 
 Exit 0 = clean, Exit 1 = issues found.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		checker, err := hygiene.New()
+		checker, err := hygiene.New(cfg.Hygiene)
 		if err != nil {
 			return err
 		}

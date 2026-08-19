@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tjp2021/devreap/internal/config"
 )
 
 // ErrIssuesFound indicates that the audit completed successfully and found
@@ -33,15 +35,17 @@ type Result struct {
 // Checker runs system hygiene audits.
 type Checker struct {
 	homeDir string
+	cfg     config.HygieneConfig
 }
 
-// New creates a Checker rooted at the user's home directory.
-func New() (*Checker, error) {
+// New creates a Checker rooted at the user's home directory. The config
+// supplies the targets for the checks that depend on one machine's layout.
+func New(cfg config.HygieneConfig) (*Checker, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	return &Checker{homeDir: home}, nil
+	return &Checker{homeDir: home, cfg: cfg}, nil
 }
 
 // RunAll executes every hygiene check and returns the combined result.
@@ -227,11 +231,16 @@ func isShellBuiltin(command string) bool {
 	}
 }
 
-// 4. Zombie dotdirs — known dead directories that reappear
+// 4. Zombie dotdirs — directories the user deleted that came back.
+//
+// Which directories those are is specific to one machine, so the list comes
+// from hygiene.zombie_dotdirs in the config. An empty list skips the check.
 func (c *Checker) checkZombieDotdirs(r *Result) {
-	deadDirs := []string{".clawdbot", ".tinyclaw", ".whatsapp-scrape", ".antigravity"}
-
-	for _, name := range deadDirs {
+	for _, name := range c.cfg.ZombieDotdirs {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
 		dir := filepath.Join(c.homeDir, name)
 		info, err := os.Stat(dir)
 		if err != nil || !info.IsDir() {
