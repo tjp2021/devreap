@@ -266,6 +266,20 @@ allowlist:
 # Extra YAML pattern files to load alongside the built-ins.
 extra_patterns:
   - ~/.config/devreap/my-patterns.yaml
+
+# Targets for `devreap hygiene`. Both lists are empty by default, and an
+# empty list means devreap skips that check. Nothing here ships with the
+# binary, because these paths only make sense on your machine.
+hygiene:
+  # Repositories to check for tracked files that look like credentials or
+  # exported conversations.
+  git_repos:
+    - ~/code/my-repo
+
+  # Directories under your home directory that you deleted and want to stay
+  # deleted. devreap reports each one that comes back.
+  zombie_dotdirs:
+    - .some-uninstalled-tool
 ```
 
 ## Built-in patterns
