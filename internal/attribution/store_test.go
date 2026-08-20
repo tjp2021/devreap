@@ -228,15 +228,37 @@ func TestForcedRotationStaysUnderCeiling(t *testing.T) {
 		}
 	}
 
-	ceiling := int64(segmentSize * maxSegments)
-	if got := s.Size(); got > ceiling {
-		t.Errorf("journal holds %d bytes against a %d byte ceiling", got, ceiling)
-	}
-	if got := s.SegmentCount(); got > maxSegments {
-		t.Errorf("journal holds %d segments, want at most %d", got, maxSegments)
-	}
 	if got := s.SegmentCount(); got < 2 {
 		t.Errorf("journal holds %d segments, so rotation never ran", got)
+	}
+
+	// The append path rotates and never evicts. Compaction reads every segment
+	// and rewrites the journal, which is far too much work to put inside a one
+	// second poll, so an append only marks the pass as owed.
+	if !s.CompactionDue() {
+		t.Fatal("rotation past the segment count did not mark compaction due")
+	}
+
+	result, ran, err := s.Maintain(func(ProcKey) bool { return false })
+	if err != nil {
+		t.Fatalf("maintain: %v", err)
+	}
+	if !ran {
+		t.Fatal("maintenance did not run with a compaction due")
+	}
+	if s.CompactionDue() {
+		t.Error("compaction stayed due after a maintenance pass")
+	}
+	if len(result.Evicted) == 0 {
+		t.Error("maintenance evicted nothing under ceiling pressure")
+	}
+
+	ceiling := int64(segmentSize * maxSegments)
+	if got := s.Size(); got > ceiling {
+		t.Errorf("journal holds %d bytes against a %d byte ceiling after maintenance", got, ceiling)
+	}
+	if got := s.SegmentCount(); got > maxSegments {
+		t.Errorf("journal holds %d segments after maintenance, want at most %d", got, maxSegments)
 	}
 
 	load, err := s.Load()
@@ -248,6 +270,11 @@ func TestForcedRotationStaysUnderCeiling(t *testing.T) {
 	}
 	if len(load.Records) == 0 {
 		t.Error("compaction emptied the journal")
+	}
+
+	// A second pass with nothing owed is a no-op rather than another rewrite.
+	if _, ran, err := s.Maintain(nil); err != nil || ran {
+		t.Errorf("maintenance ran again with nothing due: ran=%v err=%v", ran, err)
 	}
 }
 

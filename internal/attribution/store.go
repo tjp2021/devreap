@@ -118,6 +118,11 @@ type Store struct {
 	// rewrites the journal, a rewrite rotates, and a rotation would otherwise
 	// compact again.
 	compacting bool
+
+	// compactionDue records that rotation pushed the store past its segment
+	// count. Compaction runs from Maintain rather than from the append that
+	// noticed, so a poll never pays for a whole-journal rewrite.
+	compactionDue bool
 }
 
 // OpenStore creates or opens the store under dir.
@@ -267,8 +272,17 @@ func (s *Store) writeLineLocked(line []byte) error {
 
 // rotateLocked closes the full segment and opens the next one. It is a size
 // guard and nothing else: it never decides which records to drop. When the shift
-// pushes a segment past the configured count, compaction runs, and whatever
-// compaction may not evict stays on disk with a finding.
+// pushes a segment past the configured count it marks compaction due, and
+// Maintain performs the eviction later.
+//
+// Deviation from the design, recorded deliberately. The design has rotation call
+// compaction inline. Compaction reads every segment, re-encodes every record,
+// and rewrites the journal, all under the store lock, so an inline call would
+// put a whole-journal rewrite on the watcher's one second poll path and blow the
+// 15 millisecond poll budget the capacity section rests on. Rotation now only
+// raises a flag. The cost of the change is that the store can hold more than its
+// segment count between a rotation and the next maintenance pass, which is
+// bounded by the maintenance cadence rather than by the append.
 func (s *Store) rotateLocked() error {
 	if err := s.file.Close(); err != nil {
 		return fmt.Errorf("closing journal for rotation: %w", err)
@@ -296,11 +310,38 @@ func (s *Store) rotateLocked() error {
 	}
 
 	if s.overflowSegments() > 0 && !s.compacting {
-		if _, err := s.compactLocked(); err != nil {
-			return err
-		}
+		s.compactionDue = true
 	}
 	return nil
+}
+
+// CompactionDue reports whether rotation has pushed the store past its segment
+// count and a compaction pass is owed.
+func (s *Store) CompactionDue() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.compactionDue
+}
+
+// Maintain runs a compaction pass when one is due, and reports whether it ran.
+//
+// It is the only path that evicts, and its caller runs it off the poll path so a
+// whole-journal rewrite never lands inside a one second poll.
+func (s *Store) Maintain(live func(ProcKey) bool) (CompactResult, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.compactionDue {
+		return CompactResult{}, false, nil
+	}
+	if live != nil {
+		s.live = live
+	}
+	result, err := s.compactLocked()
+	if err != nil {
+		return result, true, err
+	}
+	s.compactionDue = false
+	return result, true, nil
 }
 
 func (s *Store) segmentPath(index int) string {
@@ -571,7 +612,11 @@ func (s *Store) Compact(live func(ProcKey) bool) (CompactResult, error) {
 	if live != nil {
 		s.live = live
 	}
-	return s.compactLocked()
+	result, err := s.compactLocked()
+	if err == nil {
+		s.compactionDue = false
+	}
+	return result, err
 }
 
 func (s *Store) compactLocked() (CompactResult, error) {
