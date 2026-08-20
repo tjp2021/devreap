@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "plan_id": "attribution-engine",
+  "title": "Session attribution and process lifecycle engine for devreap",
+  "owner": "devreap maintainer",
+  "project_root": ".",
+  "risk": {
+    "tier": 2,
+    "triggers": [
+      "automation",
+      "persistent_data",
+      "multi_component",
+      "production_behavior"
+    ],
+    "rationale": "A continuous watcher runs inside a user LaunchAgent daemon, records spawn links and ownership for every observed process birth, writes a durable local store, and feeds a state machine that later gates a process-killing path. Recurring automation, persistent data, and multi-component coupling set the minimum at Tier 2. Tier 3 does not apply in phase A because the design adds no kill authority, no credential handling, no network interface, and no external side effect."
+  },
+  "lifecycle": {
+    "state": "DESIGN",
+    "scope_fingerprint": null,
+    "validated_at": null
+  },
+  "scope": {
+    "in": [
+      "A watcher loop that polls the process table each second and records a birth record and a spawn link for every process it observes appear.",
+      "Ownership resolution led by watched ancestry, which yields observed confidence for any harness without vendor cooperation, with environment markers and process group demoted to corroboration and to backfill for processes born before the watcher started.",
+      "A harness adapter registry loaded from a data file, covering terminal harnesses, editor-extension-hosted harnesses, application-bundle desktop harnesses, and a compiled-in generic descriptor that labels unrecognized roots as unknown-harness.",
+      "Owner exit detection through kqueue EVFILT_PROC NOTE_EXIT watches on identified session leaders, with poll absence as the fallback source.",
+      "A durable append-only journal with periodic snapshots, an in-memory index, retention limits, and a hard size ceiling.",
+      "A per-process lifecycle state machine with per-class lifecycle_grace windows, multi-scan confirmation, and recovery paths back to ACTIVE.",
+      "A read-only devreap top surface showing per-session process trees, resident memory totals, per-process state, and time since owner exit.",
+      "Coverage and watcher health reporting through devreap status and devreap doctor.",
+      "Phase B attribution gating that can only subtract kill eligibility, behind a separate explicit opt-in key."
+    ],
+    "out": [
+      "The existing pattern matcher, weighted scorer, strong-signal gate, and observe-only default stay exactly as they are today.",
+      "No new signal that argues for termination is added, and attribution may never widen the set of kill-eligible processes.",
+      "No attribution feature may depend on one vendor's cooperation, environment variable, or hook; devreap stays harness-neutral and vendor markers remain enrichment only.",
+      "A harness missing from the adapter data file still receives full observed attribution through watched ancestry, so recognition gaps never become attribution gaps.",
+      "The existing grace_period configuration key keeps its current meaning as the wait between SIGTERM and escalation, and the new per-class window takes the distinct name lifecycle_grace so neither key is renamed.",
+      "Linux and Windows support stays out of this plan, as does cache reclamation and cross-machine correlation.",
+      "No system extension, no Apple entitlement, no elevated privilege, no network listener, and no telemetry are introduced.",
+      "No automatic action is ever taken against a process whose owner cannot be established."
+    ],
+    "implementation_paths": [
+      "internal/attribution/harness.go",
+      "internal/attribution/harnesses.yaml",
+      "internal/attribution/ownership.go",
+      "internal/attribution/store.go",
+      "internal/attribution/lifecycle.go",
+      "internal/attribution/watcher.go",
+      "internal/cli/top.go",
+      "internal/cli/status.go",
+      "internal/cli/doctor.go",
+      "internal/config/config.go",
+      "internal/config/defaults.go",
+      "internal/daemon/daemon.go",
+      "internal/scanner/scanner.go",
+      "docs/attribution.md"
+    ],
+    "dependencies": [
+      "github.com/shirou/gopsutil/v4 process enumeration already in use",
+      "macOS sysctl KERN_PROC_ALL and libproc reads for process metadata",
+      "macOS kqueue EVFILT_PROC NOTE_EXIT for session leader exit events",
+      "existing internal/logger size-bounded file rotation",
+      "existing internal/patterns class registry"
+    ],
+    "data": [
+      "birth records keyed by PID and start time, holding parent key, process group, terminal, class, harness label, link depth, and ownership claim",
+      "spawn links recorded at birth, mapping a child key to its parent key, forming the chain that reaches a session root",
+      "harness adapter descriptors holding root recognition rules, parent kind, optional marker names, repo source, and a verification status of verified-live, doc-sourced, or unverified",
+      "owner exit events holding session id, leader key, source, member count, and resident memory at exit",
+      "lifecycle transition records holding from state, to state, trigger, evidence, confirmation counter, and window deadline",
+      "watcher heartbeat records holding counters, sleep gap milliseconds, tracked count, attributed count, and journal size",
+      "allowlisted environment values limited to session id, project directory, and agent name",
+      "retention of 7 days for exited processes with a 32 megabyte hard ceiling enforced by rotation"
+    ],
+    "trust_boundaries": [
+      "single user account on one machine; every observed process belongs to that same account",
+      "process environment values and command lines are untrusted input that any local process can forge; a forged marker caps at inferred confidence and cannot manufacture a spawn link",
+      "the harness adapter data file is user-writable configuration, never authority; a bad entry can mislabel a root and can never grant eligibility",
+      "the store is a user-writable file and is never an authority for an action",
+      "phase B keeps live identity re-verification immediately before signalling, with attribution as an additional check"
+    ],
+    "external_interfaces": [
+      "optional agent-side session-end hook accepted as enrichment only, never as a dependency",
+      "local CLI surfaces top, scan, status, and doctor",
+      "no network interface of any kind"
+    ],
+    "authorities": [
+      "maintainer authorizes each phase separately; phase A approval does not carry to phase B",
+      "the user must set the phase B opt-in key by hand; no install or upgrade may set it",
+      "the built-in blocklist and the same-user restriction stay in force under every code path"
+    ]
+  },
+  "implementation": {
+    "sequence": [
+      "Add the harness adapter registry: descriptor type, data file loader with built-in entries plus user extras, compiled-in generic descriptor, and recognition tests for the four verified harness shapes.",
+      "Add ownership resolution as a pure function over process fields and a spawn-link index, with the observed, inferred, and none confidence ladder plus the secret allowlist, and unit tests.",
+      "Add the store package with record types, append, torn-tail recovery, snapshot, rotation, retention, and schema version handling.",
+      "Add the lifecycle engine as a pure state machine over injected events and an injected clock, with the full transition table and sleep gap tests.",
+      "Add the watcher loop behind a configuration key that defaults off, writing births, spawn links, and heartbeats only, with no consumer wired in.",
+      "Add owner exit watches through kqueue NOTE_EXIT on session leaders, with poll absence as the fallback source.",
+      "Wire the lifecycle engine to scan results with no effect on eligibility, and add coverage reporting to status and doctor.",
+      "Add devreap top as a read-only table view over the store.",
+      "Turn phase A on by default in observe-only form and document it in the README.",
+      "Add phase B attribution gating behind a separate opt-in key, with the subset test gating the change."
+    ],
+    "commit_boundaries": [
+      "commit 1: harness adapter registry, data file, generic fallback, and recognition tests",
+      "commit 2: ownership resolution package and its unit tests, no other package touched",
+      "commit 3: attribution store with append, load, snapshot, rotation, and corruption tests",
+      "commit 4: lifecycle state machine with injected clock and the full transition table test",
+      "commit 5: watcher loop behind a default-off configuration key, births and spawn links only",
+      "commit 6: kqueue owner exit watches with poll absence fallback",
+      "commit 7: scanner and daemon wiring with coverage reporting, still no eligibility change",
+      "commit 8: devreap top read-only view",
+      "commit 9: phase A default on plus README documentation",
+      "commit 10: phase B gating key plus the subset test, as a separately approved change"
+    ]
+  },
+  "verification": {
+    "commands": [
+      "go vet ./...",
+      "go test -race ./...",
+      "go test -race ./internal/attribution/...",
+      "go test -race -run TestLifecycleTransitions ./internal/attribution/",
+      "go test -race -run TestSleepWakeGap ./internal/attribution/",
+      "go test -race -run TestPIDReuseInvalidatesRecord ./internal/attribution/",
+      "go test -race -run TestStoreTornTailRecovery ./internal/attribution/",
+      "go test -race -run TestSecretRedaction ./internal/attribution/",
+      "go test -race -run TestHarnessNeutralityWithoutAdapterFile ./internal/attribution/",
+      "go test -race -run TestHarnessRecognitionVerifiedShapes ./internal/attribution/",
+      "go test -race -run TestBackfillClaimsAreInferredOnly ./internal/attribution/",
+      "go test -race -run TestWatcherDownMatchesTodaysEligibleSet ./internal/scanner/",
+      "go test -race -run TestPhaseBEligibilityIsSubset ./internal/scanner/",
+      "./devreap doctor",
+      "./devreap status",
+      "./devreap top --json"
+    ],
+    "exit_criteria": [
+      "Attribution coverage reaches 90 percent or higher of pattern-matched processes over 7 consecutive days, measured from heartbeat records.",
+      "Watcher uptime reaches 99 percent or higher of wall time excluding sleep, measured from heartbeat gaps over the same 7 days.",
+      "The journal stays under the 32 megabyte ceiling and rotation is observed to run at least once.",
+      "At least one real session end produces a recorded owner exit, a correct per-session tree in top, and a state progression matching the class window and confirmation count.",
+      "Coverage holds across at least two distinct harness families, one of which publishes no session marker, and at least one session attributed through the generic descriptor appears in top labelled unknown-harness.",
+      "Zero change to kill behavior is observed, proven by comparing the eligible set with the watcher running and with it stopped.",
+      "go vet and go test -race pass across all packages, with the degradation test and the redaction test present and green.",
+      "Phase B additionally requires 14 consecutive days showing the gated eligible set is a strict subset of the ungated set, followed by a hand-set opt-in key."
+    ],
+    "evidence": []
+  },
+  "approval": null,
+  "override": null
+}
