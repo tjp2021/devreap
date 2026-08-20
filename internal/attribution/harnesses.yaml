@@ -1,0 +1,144 @@
+# Built-in harness adapter descriptors.
+#
+# A descriptor names a session root and says what identity that root exposes. It
+# is a labelling service and nothing more: a harness missing from this file
+# still receives full attribution through the spawn link the watcher recorded,
+# labelled unknown-harness. A gap here degrades a label, never an attribution.
+#
+# status records how the recognition data was obtained:
+#   verified-live  observed on a real machine during the design pass
+#   doc-sourced    taken from vendor documentation
+#   unverified     shape taken from the editor signature list in this repository
+#                  and not yet confirmed against a running harness
+#
+# Recognition fields match a process this way, and a descriptor matches when any
+# populated field matches unless require_all is set, in which case every
+# populated field must match:
+#   names          exact process name
+#   exe_contains   substring of the resolved executable path
+#   exec_paths     the whole executable path, or one whole command-line argument
+#   path_contains  substring of the command line or the executable path
+#
+# Descriptors are tried in file order and the first match wins, so a specific
+# entry belongs above a general one.
+
+harnesses:
+  - name: claude-code-cli
+    display: "Claude Code, terminal and native install"
+    status: verified-live
+    parent_kind: terminal
+    root:
+      names: ["claude", "claude.exe"]
+      exe_contains:
+        - "/.local/share/claude/"
+        - "/@anthropic-ai/claude-code"
+        - "/node_modules/.bin/claude"
+      exec_paths:
+        - "/opt/homebrew/bin/claude"
+        - "/usr/local/bin/claude"
+    markers:
+      session_id_env: "CLAUDE_CODE_SESSION_ID"
+      repo_env: "CLAUDE_PROJECT_DIR"
+      agent_env: "CLAUDECODE"
+    repo_source: ["marker", "root_cwd"]
+
+  - name: codex-editor-extension
+    display: "Codex, agent binary under an editor extensions directory"
+    status: verified-live
+    parent_kind: editor_extension_host
+    root:
+      require_all: true
+      names: ["codex"]
+      exe_contains:
+        - "/.vscode/extensions/"
+        - "/.vscode-insiders/extensions/"
+        - "/.vscode-server/extensions/"
+        - "/.cursor/extensions/"
+        - "/.windsurf/extensions/"
+    repo_source: ["root_cwd"]
+
+  - name: chatgpt-desktop
+    display: "ChatGPT desktop, agent binary inside the application bundle"
+    status: verified-live
+    parent_kind: app_bundle
+    root:
+      exe_contains: ["/ChatGPT.app/Contents/Resources/"]
+      path_contains: ["/ChatGPT.app/Contents/Resources/"]
+    repo_source: ["root_cwd"]
+
+  - name: codex-cli
+    display: "Codex CLI, vendor binary under the npm package"
+    status: verified-live
+    parent_kind: terminal
+    root:
+      exe_contains: ["/@openai/codex"]
+      exec_paths:
+        - "/opt/homebrew/bin/codex"
+        - "/usr/local/bin/codex"
+    repo_source: ["root_cwd"]
+
+  - name: vscode-copilot-agent
+    display: "Visual Studio Code, agent under the plugin helper"
+    status: unverified
+    parent_kind: editor_extension_host
+    root:
+      names: ["Code Helper (Plugin)"]
+      path_contains:
+        - "/Visual Studio Code.app/"
+        - "/Code.app/Contents/MacOS/Electron"
+    repo_source: ["root_cwd"]
+
+  - name: cursor
+    display: "Cursor"
+    status: unverified
+    parent_kind: app_bundle
+    root:
+      names: ["Cursor Helper (Plugin)"]
+      path_contains: ["/Cursor.app/Contents/MacOS/Cursor"]
+    repo_source: ["root_cwd"]
+
+  - name: windsurf
+    display: "Windsurf"
+    status: unverified
+    parent_kind: app_bundle
+    root:
+      path_contains: ["/Windsurf.app/"]
+    repo_source: ["root_cwd"]
+
+  - name: jetbrains-ai
+    display: "JetBrains IDE assistant"
+    status: unverified
+    parent_kind: app_bundle
+    root:
+      path_contains:
+        - "/IntelliJ IDEA.app/"
+        - "/WebStorm.app/"
+        - "/GoLand.app/"
+        - "/PyCharm.app/"
+        - "/PhpStorm.app/"
+        - "/RustRover.app/"
+    repo_source: ["root_cwd"]
+
+  - name: claude-desktop
+    display: "Claude desktop"
+    status: unverified
+    parent_kind: app_bundle
+    root:
+      path_contains: ["/Claude.app/Contents/MacOS/Claude"]
+    repo_source: ["root_cwd"]
+
+  - name: opencode
+    display: "opencode"
+    status: unverified
+    parent_kind: terminal
+    root:
+      names: ["opencode"]
+    repo_source: ["root_cwd"]
+
+  - name: pi
+    display: "pi"
+    status: unverified
+    parent_kind: terminal
+    root:
+      names: ["pi"]
+    repo_source: ["root_cwd"]
