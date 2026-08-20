@@ -2,6 +2,7 @@ package attribution
 
 import (
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/tjp2021/devreap/internal/config"
@@ -165,6 +166,11 @@ type procRecord struct {
 // It computes eligibility and exposes it as a restriction, never as a reason to
 // act. Nothing in this type signals a process.
 type Engine struct {
+	// mu guards every field below. The watcher advances the engine on its own
+	// goroutine while the daemon reads state for reporting on another, so the
+	// engine owns its own lock rather than asking every caller to hold one.
+	mu sync.Mutex
+
 	cfg    EngineConfig
 	clock  Clock
 	states map[string]*procRecord
@@ -208,15 +214,30 @@ func NewEngine(cfg EngineConfig, clock Clock) *Engine {
 
 // SetTrusted marks whether attribution data is current. A stale watcher makes
 // the data untrusted, which freezes every accumulator until it recovers.
-func (e *Engine) SetTrusted(trusted bool) { e.trusted = trusted }
+func (e *Engine) SetTrusted(trusted bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.trusted = trusted
+}
 
 // Trusted reports whether attribution data is currently trusted.
-func (e *Engine) Trusted() bool { return e.trusted }
+func (e *Engine) Trusted() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.trusted
+}
 
 // Transitions drains the transitions written since the last call. The caller
 // appends them to the store, which is what makes the accumulators survive a
 // restart.
 func (e *Engine) Transitions() []TransitionRecord {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.drainTransitions()
+}
+
+// drainTransitions is the unlocked form, for callers already holding the lock.
+func (e *Engine) drainTransitions() []TransitionRecord {
 	out := e.pending
 	e.pending = nil
 	return out
@@ -224,6 +245,9 @@ func (e *Engine) Transitions() []TransitionRecord {
 
 // State returns the tracked state for a process.
 func (e *Engine) State(key ProcKey) (ProcessState, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	rec, ok := e.states[key.IndexKey()]
 	if !ok {
 		return ProcessState{}, false
@@ -234,6 +258,9 @@ func (e *Engine) State(key ProcKey) (ProcessState, bool) {
 // States returns every tracked process state, ordered by key so output is
 // stable.
 func (e *Engine) States() []ProcessState {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	out := make([]ProcessState, 0, len(e.states))
 	for _, rec := range e.states {
 		out = append(out, rec.state)
@@ -244,6 +271,9 @@ func (e *Engine) States() []ProcessState {
 
 // Sessions returns every known session, ordered by identifier.
 func (e *Engine) Sessions() []SessionState {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	out := make([]SessionState, 0, len(e.sessions))
 	for _, s := range e.sessions {
 		out = append(out, s)
@@ -254,6 +284,9 @@ func (e *Engine) Sessions() []SessionState {
 
 // Session returns one session's recorded state.
 func (e *Engine) Session(id string) (SessionState, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	s, ok := e.sessions[id]
 	return s, ok
 }
@@ -261,6 +294,9 @@ func (e *Engine) Session(id string) (SessionState, bool) {
 // Counts returns the number of tracked processes in each lifecycle state, which
 // is what status prints.
 func (e *Engine) Counts() map[LifecycleState]int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	counts := make(map[LifecycleState]int)
 	for _, rec := range e.states {
 		counts[rec.state.State]++
@@ -272,6 +308,9 @@ func (e *Engine) Counts() map[LifecycleState]int {
 // accumulators resume at their recorded values rather than at zero, so a restart
 // costs the time actually spent down rather than the progress already earned.
 func (e *Engine) Restore(recovered *RecoveredState) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	if recovered == nil {
 		return
 	}
@@ -286,6 +325,9 @@ func (e *Engine) Restore(recovered *RecoveredState) {
 // OnBirth records a process the watcher saw appear. A birth with no resolved
 // owner starts at UNATTRIBUTED, which is never action-eligible at any age.
 func (e *Engine) OnBirth(birth BirthRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	key := birth.Key.IndexKey()
 	state := StateActive
 	if birth.Owner.Confidence == ConfidenceNone {
@@ -318,6 +360,9 @@ func (e *Engine) OnBirth(birth BirthRecord) {
 // OnOwnerExit records a session root's exit. Owner death is an event with a
 // timestamp and a source, not something computed at read time.
 func (e *Engine) OnOwnerExit(exit OwnerExitRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	session, known := e.sessions[exit.SessionID]
 	if !known {
 		session = SessionState{SessionID: exit.SessionID, Harness: exit.Harness, RootKey: exit.RootKey}
@@ -347,6 +392,9 @@ func (e *Engine) OnOwnerExit(exit OwnerExitRecord) {
 // OnClaimUpgrade applies a claim upgrade, which is the only way an unattributed
 // process becomes eligible to progress at all.
 func (e *Engine) OnClaimUpgrade(upgrade ClaimUpgradeRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	rec, ok := e.states[upgrade.Key.IndexKey()]
 	if !ok {
 		return
@@ -374,6 +422,9 @@ func (e *Engine) OnClaimUpgrade(upgrade ClaimUpgradeRecord) {
 // remains reachable by the phase B edge. An earlier draft made REPORTED a state,
 // which stranded every confirmed process in a dead end.
 func (e *Engine) MarkReported(key ProcKey) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	if rec, ok := e.states[key.IndexKey()]; ok {
 		rec.state.Reported = true
 	}
@@ -399,6 +450,9 @@ type ScanOutcome struct {
 // and never resets or invalidates them: a gap contributes zero to the
 // accumulator and the window resumes where it stopped.
 func (e *Engine) Scan(observations []ScanObservation) ScanOutcome {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	awake, gap := e.tick()
 	outcome := ScanOutcome{AwakeDelta: awake, SleepGap: gap, NeedsReenumeration: gap > 0}
 
@@ -419,7 +473,7 @@ func (e *Engine) Scan(observations []ScanObservation) ScanOutcome {
 		e.step(rec, obs, awake)
 	}
 
-	outcome.Transitions = e.Transitions()
+	outcome.Transitions = e.drainTransitions()
 	return outcome
 }
 
@@ -610,6 +664,9 @@ func (e *Engine) r6(rec *procRecord, obs ScanObservation) (bool, string) {
 // is one the existing path already permits; a process it returns false for is
 // one attribution removes from that set.
 func (e *Engine) Eligible(key ProcKey) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	rec, ok := e.states[key.IndexKey()]
 	if !ok {
 		return false
@@ -669,6 +726,9 @@ func backoffFor(attempts int) time.Duration {
 // ReclaimExhausted reports whether a record has spent its attempts. Such a
 // record stops returning to candidacy and stays report-only.
 func (e *Engine) ReclaimExhausted(key ProcKey) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	rec, ok := e.states[key.IndexKey()]
 	return ok && rec.state.ReclaimAttempts >= MaxReclaimAttempts
 }
@@ -677,6 +737,9 @@ func (e *Engine) ReclaimExhausted(key ProcKey) bool {
 // calls it, and it refuses any state but CONFIRMED_ORPHAN, so the edge cannot be
 // reached by accident.
 func (e *Engine) RequestReclaim(key ProcKey) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	rec, ok := e.states[key.IndexKey()]
 	if !ok || rec.state.State != StateConfirmedOrphan {
 		return false
@@ -689,6 +752,9 @@ func (e *Engine) RequestReclaim(key ProcKey) bool {
 // signal is terminal. A failure counts an attempt and returns the record to
 // RECLAIM_FAILED, which is report-only.
 func (e *Engine) CompleteReclaim(key ProcKey, succeeded bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	rec, ok := e.states[key.IndexKey()]
 	if !ok || rec.state.State != StateReclaimRequested {
 		return
@@ -709,6 +775,9 @@ func (e *Engine) CompleteReclaim(key ProcKey, succeeded bool) {
 // AbandonReclaim takes the recovery edge out of RECLAIM_REQUESTED when live
 // re-verification observed adoption. The kill is abandoned.
 func (e *Engine) AbandonReclaim(key ProcKey) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	rec, ok := e.states[key.IndexKey()]
 	if !ok || rec.state.State != StateReclaimRequested {
 		return
