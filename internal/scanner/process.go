@@ -25,6 +25,14 @@ type ProcessInfo struct {
 	Cmdline string
 	Args    string
 
+	// Exe is the resolved path of the running executable. It is empty when the
+	// path could not be read, which happens routinely on macOS: proc_pidpath
+	// fails once the binary has been replaced on disk, so every process from a
+	// tool that self-updates loses its path. Emptiness therefore means
+	// "unknown", never "not an IDE", and Exe is only ever used to establish
+	// that a process IS something. No kill decision may rest on it being empty.
+	Exe string
+
 	CreateTime time.Time
 	// CreateTimeKnown is false when the start time could not be read.
 	CreateTimeKnown bool
@@ -91,6 +99,10 @@ func processToInfo(p *process.Process, portMap map[int32][]uint32) *ProcessInfo 
 	ppid, _ := p.Ppid()
 	cmdline, _ := p.Cmdline()
 
+	// A failed lookup leaves Exe empty. See the field comment: unknown is not
+	// evidence, so the error is deliberately not propagated.
+	exe, _ := p.Exe()
+
 	// Each of these can fail. Record success separately so downstream code
 	// can tell a real answer from a missing one.
 	createMs, createErr := p.CreateTime()
@@ -121,6 +133,7 @@ func processToInfo(p *process.Process, portMap map[int32][]uint32) *ProcessInfo 
 		Name:            name,
 		Cmdline:         cmdline,
 		Args:            args,
+		Exe:             exe,
 		CreateTime:      createTime,
 		CreateTimeKnown: createTimeKnown,
 		HasTTY:          terminalErr == nil && terminal != "",
