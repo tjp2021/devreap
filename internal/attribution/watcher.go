@@ -189,9 +189,11 @@ type Watcher struct {
 
 	maintaining sync.Mutex
 
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	stopOnce sync.Once
+	stopCh       chan struct{}
+	doneCh       chan struct{}
+	stopOnce     sync.Once
+	shutdownOnce sync.Once
+	running      atomic.Bool
 }
 
 // NewWatcher builds a watcher over an open store and a harness registry.
@@ -281,8 +283,9 @@ func (w *Watcher) LastHeartbeatAge() time.Duration {
 // goroutine inside the existing daemon process, so there is one supervised
 // process and one lifecycle to reason about.
 func (w *Watcher) Run() {
+	w.running.Store(true)
 	defer close(w.doneCh)
-	defer w.shutdown()
+	defer func() { w.shutdownOnce.Do(w.shutdown) }()
 
 	ticker := time.NewTicker(w.cfg.PollInterval)
 	defer ticker.Stop()
@@ -310,6 +313,13 @@ func (w *Watcher) Run() {
 // once.
 func (w *Watcher) Stop() {
 	w.stopOnce.Do(func() { close(w.stopCh) })
+	if !w.running.Load() {
+		// Run was never started, so nothing will close the done channel. Do the
+		// shutdown work here rather than waiting for a goroutine that does not
+		// exist.
+		w.shutdownOnce.Do(w.shutdown)
+		return
+	}
 	<-w.doneCh
 }
 
@@ -805,13 +815,18 @@ func (w *Watcher) maybeHeartbeat(mono time.Duration, snap *Snapshot) {
 	w.lastHeartbeat = mono
 	w.heartbeatMono.Store(int64(mono))
 
+	// Coverage is the share of pattern-matched processes carrying an observed
+	// ownership claim, counted after upgrades are applied. Counting every
+	// tracked process rather than the pattern-matched ones, or counting an
+	// inferred claim as covered, would both report a number the exit criterion
+	// does not ask for.
 	tracked, attributed := 0, 0
 	for _, state := range w.engine.States() {
-		if state.State.Terminal() {
+		if state.State.Terminal() || state.Class == "" {
 			continue
 		}
 		tracked++
-		if state.Confidence != ConfidenceNone && state.SessionID != "" {
+		if state.Confidence == ConfidenceObserved && state.SessionID != "" {
 			attributed++
 		}
 	}

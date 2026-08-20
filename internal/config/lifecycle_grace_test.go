@@ -194,3 +194,54 @@ func TestDefaultConfirmationCount(t *testing.T) {
 		t.Errorf("confirmation count: got %d, want 3", DefaultConfirmationCount)
 	}
 }
+
+// TestPartialAttributionBlockKeepsOtherDefaults is the P0-8 hazard checked in a
+// new place. A user config naming one attribution key must not silently zero the
+// rest of the block, the way a blocklist key once discarded all 26 built-in
+// protections.
+func TestPartialAttributionBlockKeepsOtherDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("attribution:\n  enabled: true\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+
+	if !cfg.Attribution.Enabled {
+		t.Error("the key the user set was not applied")
+	}
+	if cfg.Attribution.PollInterval != DefaultAttributionPoll {
+		t.Errorf("poll interval = %s, want the built-in %s", cfg.Attribution.PollInterval, DefaultAttributionPoll)
+	}
+	if cfg.Attribution.StoreDir == "" {
+		t.Error("store dir was discarded by a partial attribution block")
+	}
+	if cfg.Attribution.GateKills {
+		t.Error("the phase B opt-in was set by a config that never named it")
+	}
+}
+
+// TestGateKillsStaysOffUnlessSetByHand asserts the phase B opt-in is never
+// implied. No install and no upgrade may set it.
+func TestGateKillsStaysOffUnlessSetByHand(t *testing.T) {
+	if Default().Attribution.GateKills {
+		t.Error("the default configuration enables phase B gating")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("dry_run: false\nattribution:\n  enabled: true\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	if cfg.Attribution.GateKills {
+		t.Error("turning killing on also turned phase B gating on; the two opt-ins are separate")
+	}
+}

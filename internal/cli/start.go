@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/tjp2021/devreap/internal/attribution"
+	"github.com/tjp2021/devreap/internal/config"
 	"github.com/tjp2021/devreap/internal/daemon"
 	"github.com/tjp2021/devreap/internal/logger"
 	"github.com/tjp2021/devreap/internal/notify"
@@ -67,7 +70,47 @@ func runForeground() error {
 	s := scanner.New(registry, cfg)
 	d := daemon.New(cfg, s, log, notifier)
 
+	if cfg.Attribution.Enabled {
+		watcher, err := attribution.Start(attribution.StartOptions{
+			StoreDir:      cfg.Attribution.StoreDir,
+			AdapterFile:   cfg.Attribution.AdapterFile,
+			PollInterval:  cfg.Attribution.PollInterval,
+			ScanInterval:  cfg.ScanInterval,
+			Windows:       cfg.LifecycleGrace,
+			Confirmations: config.DefaultConfirmationCount,
+			Classifier:    classifierFor(registry),
+			Logf: func(format string, args ...any) {
+				log.Info(fmt.Sprintf(format, args...), logger.Entry{Action: "attribution"})
+			},
+		})
+		if err != nil {
+			// Attribution never blocks the daemon. Without it every process is
+			// unattributed, which is the safe state, and the scanner behaves
+			// exactly as it does today.
+			log.Error("attribution watcher not started", logger.Entry{Error: err.Error(), Action: "attribution"})
+		} else {
+			d = d.WithAttribution(watcher, cfg.Attribution.GateKills)
+		}
+	}
+
 	return d.Run()
+}
+
+// classifierFor adapts the existing pattern registry to the watcher's one
+// question. Classification stays where it already lives: the watcher never
+// classifies anything itself.
+func classifierFor(registry *patterns.Registry) attribution.Classifier {
+	return func(name, cmdline string) string {
+		args := ""
+		if fields := strings.Fields(cmdline); len(fields) > 1 {
+			args = strings.Join(fields[1:], " ")
+		}
+		match := registry.Match(name, args)
+		if match == nil {
+			return ""
+		}
+		return match.Pattern.Category
+	}
 }
 
 func runBackground() error {

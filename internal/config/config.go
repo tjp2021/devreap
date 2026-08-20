@@ -40,6 +40,43 @@ type Config struct {
 	//
 	// A user map merges with the built-in class table and never replaces it.
 	LifecycleGrace map[string]time.Duration `yaml:"lifecycle_grace"`
+
+	// Attribution configures the session attribution watcher, which records who
+	// started a process and tracks it through its lifecycle. It is observe-only.
+	Attribution AttributionConfig `yaml:"attribution"`
+}
+
+// AttributionConfig controls the session attribution watcher.
+//
+// Attribution can only ever subtract kill eligibility. Nothing here can make
+// devreap kill a process it would otherwise leave alone, which is the single
+// property that makes the feature safe to ship.
+type AttributionConfig struct {
+	// Enabled turns the watcher on. It is observe-only whatever this is set to:
+	// the watcher records births, ownership, and lifecycle state, and it holds no
+	// kill path in its code.
+	Enabled bool `yaml:"enabled"`
+
+	// PollInterval is the process table poll cadence. Shortening it shrinks the
+	// race where a process is born and orphaned between two polls, at a
+	// proportional cost in processor time.
+	PollInterval time.Duration `yaml:"poll_interval"`
+
+	// StoreDir holds the journal and its snapshot. It is created at mode 0700
+	// and every file inside it at 0600, because a birth record holds command
+	// lines and repository paths even after redaction.
+	StoreDir string `yaml:"store_dir"`
+
+	// AdapterFile is an optional user harness descriptor file. It adds
+	// recognition rules to the built-in table. A missing file is normal, and a
+	// broken one leaves the built-in descriptors in force.
+	AdapterFile string `yaml:"adapter_file"`
+
+	// GateKills is the phase B opt-in, and it is separate from the existing kill
+	// opt-in so both must be set. It lets attribution remove processes from the
+	// kill-eligible set, and it can never add one. No install and no upgrade may
+	// set it: the user sets it by hand after reviewing the record.
+	GateKills bool `yaml:"gate_kills"`
 }
 
 // LifecycleWindow returns the awake-time budget for a class, and whether the
@@ -101,6 +138,7 @@ func Default() *Config {
 		},
 		Weights:        DefaultWeights(),
 		LifecycleGrace: DefaultLifecycleGrace(),
+		Attribution:    defaultAttributionExpanded(),
 	}
 }
 
@@ -188,6 +226,8 @@ func Load(path string) (*Config, error) {
 
 	cfg.LogDir = expandPath(cfg.LogDir)
 	cfg.PidFile = expandPath(cfg.PidFile)
+	cfg.Attribution.StoreDir = expandPath(cfg.Attribution.StoreDir)
+	cfg.Attribution.AdapterFile = expandPath(cfg.Attribution.AdapterFile)
 	for i, repo := range cfg.Hygiene.GitRepos {
 		cfg.Hygiene.GitRepos[i] = expandPath(repo)
 	}
@@ -235,6 +275,16 @@ func (c *Config) Validate() error {
 		if w.value < 0 || w.value > 1.0 {
 			return fmt.Errorf("weight %q must be between 0 and 1.0, got %.2f", w.name, w.value)
 		}
+	}
+
+	if c.Attribution.PollInterval < 100*time.Millisecond {
+		return fmt.Errorf("attribution.poll_interval must be >= 100ms, got %s", c.Attribution.PollInterval)
+	}
+	if c.Attribution.PollInterval > time.Minute {
+		return fmt.Errorf("attribution.poll_interval must be <= 1m, got %s", c.Attribution.PollInterval)
+	}
+	if c.Attribution.StoreDir == "" {
+		return fmt.Errorf("attribution.store_dir must not be empty")
 	}
 
 	for _, class := range knownLifecycleClasses() {
@@ -328,6 +378,15 @@ func mergeBlocklist(builtin, user []string) []string {
 		}
 	}
 	return merged
+}
+
+// defaultAttributionExpanded returns the attribution defaults with their paths
+// expanded, which is the form the rest of the program uses.
+func defaultAttributionExpanded() AttributionConfig {
+	cfg := DefaultAttribution()
+	cfg.StoreDir = expandPath(cfg.StoreDir)
+	cfg.AdapterFile = expandPath(cfg.AdapterFile)
+	return cfg
 }
 
 func expandPath(path string) string {

@@ -14,6 +14,7 @@ import (
 
 	gopsProcess "github.com/shirou/gopsutil/v4/process"
 
+	"github.com/tjp2021/devreap/internal/attribution"
 	"github.com/tjp2021/devreap/internal/config"
 	"github.com/tjp2021/devreap/internal/killer"
 	"github.com/tjp2021/devreap/internal/logger"
@@ -39,6 +40,34 @@ type Daemon struct {
 	// conditions still hold. Injectable so tests can drive both outcomes;
 	// production always uses scanner.RecheckStrongSignal.
 	recheckStrongSignal func(pid int32) (bool, error)
+
+	// watcher records who started each process and tracks it through its
+	// lifecycle. It is observe-only and runs on its own goroutine inside this
+	// process, so there is one supervised process and one lifecycle to reason
+	// about. A nil watcher means attribution is off, and the scanner then
+	// behaves exactly as it does today.
+	watcher *attribution.Watcher
+	// gate is the restriction attribution exposes to the kill path. It can only
+	// subtract eligibility.
+	gate scanner.AttributionGate
+	// gateKills is the phase B opt-in, separate from the existing kill opt-in.
+	// It is false in phase A and no install or upgrade may set it.
+	gateKills bool
+}
+
+// WithAttribution attaches an attribution watcher. The daemon runs it on its own
+// goroutine and stops it on shutdown.
+//
+// Attaching a watcher never changes kill behavior on its own. The gate is
+// consulted only when the separate phase B opt-in is set, and even then it can
+// only remove processes from the set the existing scorer already produced.
+func (d *Daemon) WithAttribution(w *attribution.Watcher, gateKills bool) *Daemon {
+	d.watcher = w
+	d.gateKills = gateKills
+	if w != nil {
+		d.gate = attribution.NewGate(w)
+	}
+	return d
 }
 
 func New(cfg *config.Config, s ScannerI, log *logger.Logger, notifier notify.Notifier) *Daemon {
@@ -61,6 +90,16 @@ func (d *Daemon) Run() error {
 		return fmt.Errorf("writing PID file: %w", err)
 	}
 	defer d.removePID()
+
+	if d.watcher != nil {
+		go d.watcher.Run()
+		defer func() {
+			if err := d.watcher.Close(); err != nil {
+				d.log.Error("stopping the attribution watcher", logger.Entry{Error: err.Error()})
+			}
+		}()
+		d.log.Info("attribution watcher started (observe-only)", logger.Entry{Action: "start"})
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -142,8 +181,13 @@ func (d *Daemon) scanAndKill() {
 		// This is derived from the signal data rather than read from the
 		// candidate's KillEligible field, so the gate cannot be bypassed by a
 		// caller that builds a candidate without setting the field.
-		if !scanner.HasStrongSignal(orphan.Signals) {
-			d.log.Info("suspicious, not killable (no strong signal)", logger.Entry{
+		//
+		// Attribution enters here as a further restriction and nothing else. In
+		// phase A the gate is off, so this call reduces to the strong-signal
+		// check it replaced; in phase B it can only remove candidates from the
+		// set that check already produced.
+		if !scanner.KillEligible(orphan, d.gate, d.gateKills) {
+			d.log.Info("suspicious, not killable", logger.Entry{
 				PID:     orphan.Process.PID,
 				Process: orphan.Process.Name,
 				Cmdline: orphan.Process.Cmdline,

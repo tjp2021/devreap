@@ -656,3 +656,115 @@ func TestDaemonRun_RealRecheckSparesProcessWithLiveParent(t *testing.T) {
 		t.Error("a process whose parent is alive must not be killed")
 	}
 }
+
+// refusingGate confirms nothing. Attached with the phase B opt-in off it must
+// change nothing at all, and with the opt-in on it must remove every candidate.
+type refusingGate struct{ trusted bool }
+
+func (g *refusingGate) Trusted() bool                         { return g.trusted }
+func (g *refusingGate) ConfirmedOrphan(int32, time.Time) bool { return false }
+
+// TestDaemonAttributionOffChangesNothing asserts the phase A promise at the
+// daemon level. A gate that refuses every process is attached, the phase B
+// opt-in stays off, and the kill still happens exactly as it does today.
+func TestDaemonAttributionOffChangesNothing(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.DryRun = false
+
+	cmd := exec.Command("sleep", "3600")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting the child: %v", err)
+	}
+	pid := int32(cmd.Process.Pid)
+	go cmd.Wait()
+	t.Cleanup(func() { _ = cmd.Process.Signal(syscall.SIGKILL) })
+
+	ms := &mockScanner{
+		result: &scanner.ScanResult{
+			TotalProcesses: 100,
+			Matched:        1,
+			Orphans: []scanner.OrphanCandidate{{
+				Process: liveProcessInfo(t, pid),
+				Pattern: patterns.Pattern{Name: "node-mcp-server", Signal: patterns.SignalTERM},
+				Score:   0.75,
+				Signals: map[string]float64{"ppid_is_init": 0.40, "no_tty": 0.15},
+			}},
+		},
+	}
+
+	d := New(cfg, ms, logger.NewStdout(), &mockNotifier{})
+	d.gate = &refusingGate{trusted: true}
+	d.gateKills = false
+	d.recheckStrongSignal = func(int32) (bool, error) { return true, nil }
+
+	done := make(chan error, 1)
+	go func() { done <- d.Run() }()
+	time.Sleep(300 * time.Millisecond)
+	d.Stop()
+	<-done
+
+	proc, _ := os.FindProcess(int(pid))
+	if err := proc.Signal(syscall.Signal(0)); err == nil {
+		t.Error("the process survived; attribution being present must not change the kill path")
+	}
+}
+
+// TestDaemonPhaseBGateOnlySubtracts asserts the other direction. With the opt-in
+// set, a gate that confirms nothing removes the candidate the daemon would
+// otherwise have killed.
+func TestDaemonPhaseBGateOnlySubtracts(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.DryRun = false
+
+	cmd := exec.Command("sleep", "3600")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting the child: %v", err)
+	}
+	pid := int32(cmd.Process.Pid)
+	go cmd.Wait()
+	t.Cleanup(func() { _ = cmd.Process.Signal(syscall.SIGKILL) })
+
+	ms := &mockScanner{
+		result: &scanner.ScanResult{
+			TotalProcesses: 100,
+			Matched:        1,
+			Orphans: []scanner.OrphanCandidate{{
+				Process: liveProcessInfo(t, pid),
+				Pattern: patterns.Pattern{Name: "node-mcp-server", Signal: patterns.SignalTERM},
+				Score:   0.75,
+				Signals: map[string]float64{"ppid_is_init": 0.40, "no_tty": 0.15},
+			}},
+		},
+	}
+
+	d := New(cfg, ms, logger.NewStdout(), &mockNotifier{})
+	d.gate = &refusingGate{trusted: true}
+	d.gateKills = true
+	d.recheckStrongSignal = func(int32) (bool, error) { return true, nil }
+
+	done := make(chan error, 1)
+	go func() { done <- d.Run() }()
+	time.Sleep(300 * time.Millisecond)
+	d.Stop()
+	<-done
+
+	proc, _ := os.FindProcess(int(pid))
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		t.Error("the gate refused the process and it was killed anyway")
+	}
+}
+
+// TestDaemonDefaultsLeavePhaseBOff asserts a daemon built the ordinary way
+// carries no gate and no opt-in.
+func TestDaemonDefaultsLeavePhaseBOff(t *testing.T) {
+	d := New(testConfig(t), &mockScanner{result: &scanner.ScanResult{}}, logger.NewStdout(), &mockNotifier{})
+	if d.gateKills {
+		t.Error("a default daemon has phase B gating enabled")
+	}
+	if d.gate != nil {
+		t.Error("a default daemon carries an attribution gate")
+	}
+	if d.WithAttribution(nil, false).gate != nil {
+		t.Error("attaching a nil watcher installed a gate")
+	}
+}

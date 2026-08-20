@@ -18,6 +18,37 @@ const (
 	DefaultDryRun = true
 )
 
+// Attribution defaults.
+const (
+	// DefaultAttributionEnabled turns the watcher on by default. It is safe to
+	// default on because attribution is observe-only and can never widen the set
+	// of processes devreap is willing to kill.
+	DefaultAttributionEnabled = false
+
+	// DefaultAttributionPoll is the process table poll cadence. One second keeps
+	// the birth race small at roughly 1.5 per cent of one core.
+	DefaultAttributionPoll = time.Second
+
+	DefaultAttributionStoreDir    = "~/.local/share/devreap/attribution"
+	DefaultAttributionAdapterFile = "~/.config/devreap/harnesses.yaml"
+
+	// DefaultGateKills is false and stays false until the user sets it by hand.
+	// Phase B gating is a separate opt-in from the existing kill opt-in, and no
+	// install or upgrade may set it.
+	DefaultGateKills = false
+)
+
+// DefaultAttribution returns the built-in attribution settings.
+func DefaultAttribution() AttributionConfig {
+	return AttributionConfig{
+		Enabled:      DefaultAttributionEnabled,
+		PollInterval: DefaultAttributionPoll,
+		StoreDir:     DefaultAttributionStoreDir,
+		AdapterFile:  DefaultAttributionAdapterFile,
+		GateKills:    DefaultGateKills,
+	}
+}
+
 // Process classes the lifecycle window is keyed by. The first four are pattern
 // categories; the last two are the conditions that have no window at all.
 const (
