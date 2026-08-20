@@ -63,9 +63,35 @@ var liveAgents = []struct {
 	label string
 	procs []ProcessInfo
 }{
+	// The claude fixtures below carry values read off a real macOS process
+	// table, not invented ones. The original fixtures used Name "claude",
+	// which macOS never reports, so they passed while issue #8 stayed broken.
 	{
 		label: "terminal-launched claude",
-		procs: []ProcessInfo{{Name: "claude", Cmdline: "claude"}},
+		procs: []ProcessInfo{{
+			Name:    "claude.exe",
+			Cmdline: "claude",
+			Exe:     "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+		}},
+	},
+	{
+		// Same session after the CLI updated itself: proc_pidpath now fails,
+		// so only the process name is left to identify it.
+		label: "terminal-launched claude with an unreadable exe path",
+		procs: []ProcessInfo{{
+			Name:    "claude.exe",
+			Cmdline: "claude --resume 6876e516-efd5-4053-8d6e-abd00f78167c",
+		}},
+	},
+	{
+		// Native installer: the process is named after the version, so the
+		// executable path is the only identifying evidence.
+		label: "native install claude",
+		procs: []ProcessInfo{{
+			Name:    "2.1.27",
+			Cmdline: "claude",
+			Exe:     "/Users/dev/.local/share/claude/versions/2.1.27",
+		}},
 	},
 	{
 		label: "homebrew claude",
@@ -236,6 +262,26 @@ func TestAgentSignaturesDetected(t *testing.T) {
 		want  bool
 	}{
 		{"bare claude", []ProcessInfo{{Name: "claude", Cmdline: "claude"}}, true},
+		// The macOS shapes from issue #8.
+		{"macos p_comm claude.exe", []ProcessInfo{{
+			Name:    "claude.exe",
+			Cmdline: "claude",
+			Exe:     "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+		}}, true},
+		{"macos claude.exe without an exe path", []ProcessInfo{{
+			Name: "claude.exe", Cmdline: "claude --resume 82ee7252-bc45-42da-85b4-9e04a5141f62",
+		}}, true},
+		{"native install by exe path", []ProcessInfo{{
+			Name: "2.1.27", Cmdline: "claude", Exe: "/Users/dev/.local/share/claude/versions/2.1.27",
+		}}, true},
+		{"npm install by exe path only", []ProcessInfo{{
+			Name:    "node",
+			Cmdline: "claude",
+			Exe:     "/Users/dev/.npm/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+		}}, true},
+		{"homebrew claude by exe path", []ProcessInfo{{
+			Name: "claude", Cmdline: "claude", Exe: "/opt/homebrew/bin/claude",
+		}}, true},
 		{"homebrew claude", []ProcessInfo{{Name: "node", Cmdline: "node /opt/homebrew/bin/claude"}}, true},
 		{"usr local claude", []ProcessInfo{{Name: "node", Cmdline: "node /usr/local/bin/claude"}}, true},
 		{"bare codex", []ProcessInfo{{Name: "codex", Cmdline: "codex"}}, true},
@@ -244,6 +290,16 @@ func TestAgentSignaturesDetected(t *testing.T) {
 		// Still must not fire on unrelated processes that merely contain the word.
 		{"claude-helper", []ProcessInfo{{Name: "claude-helper", Cmdline: "/usr/local/bin/claude-helper"}}, false},
 		{"codex-notes", []ProcessInfo{{Name: "codex-notes", Cmdline: "/usr/local/bin/codex-notes"}}, false},
+		// A version-string name is not evidence on its own. Matching those by
+		// name would let any process called "2.1.27" suppress the signal.
+		{"version-named process elsewhere", []ProcessInfo{{
+			Name: "2.1.27", Cmdline: "/Users/dev/tools/2.1.27", Exe: "/Users/dev/tools/2.1.27",
+		}}, false},
+		// An unreadable executable path must not match a path fragment.
+		{"unknown exe path", []ProcessInfo{{Name: "node", Cmdline: "node server.js"}}, false},
+		{"claude-helper near the bin path", []ProcessInfo{{
+			Name: "claude-helper", Cmdline: "claude-helper", Exe: "/opt/homebrew/bin/claude-helper",
+		}}, false},
 	}
 
 	for _, tc := range cases {
