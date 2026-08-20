@@ -110,3 +110,16 @@ Raw coverage is reported beside it and decides nothing.
 
 Every later entry records both numbers. Any pass claim cites the cohort number
 and states the raw number next to it.
+
+## DEFERRED until the window closes
+
+Work named here is held on purpose. Changing the binary during measurement
+would void the window, so each item waits for `2026-08-27T20:40:10Z`.
+
+- Wire the claim upgrade path to a production caller.
+  `Resolver.Upgrade` (`internal/attribution/ownership.go:448`),
+  `Engine.OnClaimUpgrade` (`internal/attribution/lifecycle.go:394`), and
+  `Store.AppendClaimUpgrade` (`internal/attribution/store.go:235`) are reached
+  from tests only. R7a promises the behaviour and 0.3.0 does not deliver it.
+  Tim deferred the fix on 2026-08-20. Tracked as issue #12, because a note at
+  the foot of an append-only log does not fire by itself.
