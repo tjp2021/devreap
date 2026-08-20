@@ -138,12 +138,23 @@ R5. Every tracked process holds one lifecycle state, and every transition is
 written with its trigger and its evidence.
 
 R6. A process may reach `CONFIRMED_ORPHAN` only when all of the following hold:
-its owner exit is recorded, its class grace window has expired, N consecutive
-confirming scans have passed without a sleep gap, its attribution confidence is
-`observed`, and the existing strong lifecycle signal is present on a live read.
+its owner exit is recorded, its awake-time accumulator has reached
+`lifecycle_grace` for its class, the confirmation count has been reached, its
+attribution confidence is `observed`, and the existing strong lifecycle signal
+is present on a live read.
 
-R7. Recovery is always available. Any state except `EXITED` returns to `ACTIVE`
-when the process gains a live owner.
+R7. Recovery is always available. Every state except `EXITED` and `RECLAIMED`
+has an edge back to `ACTIVE`, taken when the process gains a live owner or when
+a claim upgrade attaches it to a live session.
+
+R7a. A birth record is immutable, and a later claim upgrade record may raise a
+claim from `inferred` to `observed` when a spawn link becomes provable. Nothing
+may lower a claim except a key mismatch, which invalidates the record outright.
+Coverage is measured after upgrades are applied.
+
+R7b. Lifecycle windows and confirmation counters count awake time only. Sleep
+pauses them, and never resets or invalidates them. Both values persist in
+transition records so they survive a restart.
 
 R8. Unattributed and unclassified processes never expire out of their grace
 window. They stay visible and stay ineligible forever.
@@ -155,6 +166,15 @@ action.
 R10. When the watcher is absent, stale, or unhealthy, the scanner behaves
 exactly as it does today.
 
+R11. Evidence export is part of phase A. `devreap top --json` emits the view as
+machine-readable output, and `devreap evidence <session>` emits one session's
+spawn tree, timings, owner exit, and full transition history as a single JSON
+document suitable for attaching to an upstream bug report.
+
+R12. Every path that reads a foreign process's arguments or environment passes
+its result through one redaction filter before any consumer sees it. No such
+facility exists in the codebase today, so this design builds it.
+
 Acceptance criteria are measurable and are listed in Exit criteria.
 
 ## Quality attributes
@@ -164,14 +184,16 @@ every read error, every gap in observation, and every disagreement between
 channels resolves to "do not act".
 
 Attribution coverage is the headline quality number. Coverage is the share of
-pattern-matched processes carrying an `observed` ownership claim. Below 90 per
-cent over a week of real use, the feature has not earned its place.
+pattern-matched processes carrying an `observed` ownership claim, counted after
+claim upgrades. Below 90 per cent over a week of real use, the feature has not
+earned its place.
 
-Watcher cost stays under 1 per cent of one core at the default cadence.
-Measured baseline on the maintainer's machine: a full enumeration of 755
-processes with environment reads takes 56 to 64 milliseconds through `ps`, and
-45 milliseconds without environment reads. An in-process `sysctl` read avoids
-the process spawn included in those numbers.
+Watcher cost stays near 1.5 per cent of one core at the default cadence. The
+steady-state poll is one bulk `sysctl` call plus a key comparison, measured at
+13 to 15 milliseconds for about 800 processes, and full metadata collection
+runs only for processes that are new in that poll. The budget rests on the
+diff-only path rather than on a whole-machine environment read, and the figures
+are set out under Capacity.
 
 Store size stays bounded by rotation with a hard ceiling, and the tool works
 correctly with an empty store.
@@ -199,6 +221,24 @@ this tool tracks. Measured live: 40 of 40 `node` processes, 40 of 40 `python3`
 processes, and 8 of 8 agent binaries exposed their environment. The reads that
 failed were Apple platform binaries such as `cfprefsd`, `trustd`, `secd`, and
 `WindowManager`, which are precisely the processes devreap must never touch.
+
+The current process library cannot perform that read. In gopsutil v4.26.1, the
+`darwin` build selects the shared BSD implementation, whose
+`EnvironWithContext` returns `ErrNotImplementedError`, the error whose text is
+"not implemented yet". Verified by reading the module source at
+`process/process_bsd.go` lines 63 to 65, under the build constraint
+`darwin || freebsd || openbsd`. Every environment read through that library
+fails on this platform, without exception. The capability exists at the
+operating system level, which is how the measurements above were taken, so this
+design builds a small `KERN_PROCARGS2` reader rather than assuming a library
+call that does not exist.
+
+The same `sysctl` interface supplies the rest of the birth record. A single
+`KERN_PROC_ALL` call returns a `kinfo_proc` array holding the process
+identifier, parent identifier, process group, controlling terminal, start time,
+and owner for every process at once. Reading those fields per process through
+separate library calls would multiply syscalls by the process count for no
+benefit.
 
 Session markers exist for some harnesses and not for others, which is why they
 cannot be the primary channel. One harness family measured live here exposed
@@ -247,9 +287,11 @@ boundary is that account. Everything it reads is owned by the same user, and
 everything it writes lives under the user's data directory.
 
 Upstream dependencies are the macOS process interfaces already in use through
-gopsutil, plus `kqueue` for owner exit notification. No new external service,
-no network call, and no additional third-party module are required, because the
-store is built on the file rotation machinery the logger already carries.
+gopsutil, the `sysctl` calls that library does not expose, and `kqueue` for
+owner exit notification. No new external service, no network call, and no
+additional third-party module are required. The store carries its own small
+rotation rather than reusing the logger's, for the permission and retention
+reasons given under Storage.
 
 Downstream consumers are the existing scanner, which may read attribution as an
 additional restriction, and the CLI surfaces `top`, `scan`, `status`, and
@@ -298,10 +340,27 @@ requires user configuration the tool cannot assume.
    +--------------------------------------------------------------+
 ```
 
+The process-arguments reader owns the platform read that the process library
+cannot do. It wraps `KERN_PROC_ALL` for the bulk snapshot and `KERN_PROCARGS2`
+for the argument and environment block of a single process, parses the packed
+buffer, and returns the command line and the environment as slices. It is the
+only component that touches foreign process memory, it never retains a full
+environment beyond the call, and it hands every result to the redaction filter
+before anything else sees it.
+
+The redaction filter owns secret suppression, and it does not exist in the
+codebase today. Nothing in the repository currently redacts a command line or
+an environment value, so this design builds that facility rather than reusing
+one. It applies the variable-name allowlist, drops every value outside it,
+masks token-shaped and key-shaped command-line arguments, and is the single
+choke point between the reader and every consumer. Its tests are the gate on
+the reader shipping at all.
+
 The harness adapter registry owns root recognition. It loads descriptors from a
 data file, exposes one lookup that maps a process to a harness name or to the
 generic descriptor, and holds no other logic. It is a labelling service, so a
-gap in it degrades a label rather than an attribution.
+gap in it degrades a label rather than an attribution. It validates every
+descriptor at load and rejects the unsafe shapes listed under Threats.
 
 The watcher loop owns birth capture. It polls the process table, diffs against
 the previous snapshot, and for each new process reads parent, process group,
@@ -385,9 +444,12 @@ cannot erase it.
 Channel 2 is the inherited environment, which now serves two narrower jobs.
 First it corroborates: a marker naming the same session the ancestry chain
 already named raises no confidence tier but is recorded in `channels` and shown
-in reports. Second it backfills: a process born before the watcher started has
-no recorded link, and a marker is the only way to name its owner. A backfilled
-claim is `inferred`, never `observed`, because nothing witnessed the spawn.
+in reports. Second it backfills, and backfill covers every case where no spawn
+link was recorded, for any reason. That is one condition with three causes: the
+process was born before the watcher started, it was born during a sleep gap, or
+it was born and orphaned inside a single poll interval. In all three the
+watcher witnessed nothing, so a marker is the only way to name an owner, and
+the claim is `inferred` rather than `observed`.
 
 Channel 3 is process group with controlling terminal, used only to corroborate
 and to seed the generic descriptor. Alone it is insufficient, because
@@ -403,6 +465,39 @@ Cold start is the honest cost of this ordering. On first install, after a
 reboot, and after any store loss, every existing process is at best `inferred`.
 The snapshot preserves `observed` claims across an ordinary daemon restart, so
 the cold-start window is a real but rare condition rather than a routine one.
+
+Claims can be upgraded, which recovers part of that cost. A birth record is
+immutable, so an upgrade is a separate record rather than an edit.
+
+```json
+{
+  "v": 1,
+  "type": "claim_upgrade",
+  "at": "2026-08-20T06:02:44.118Z",
+  "key": { "pid": 98925, "start_time": "2026-08-19T08:20:54.113Z" },
+  "from": "inferred",
+  "to": "observed",
+  "reason": "ancestry_chain_resolved",
+  "evidence": { "root_key": { "pid": 98888, "start_time": "..." }, "link_depth": 2 }
+}
+```
+
+An upgrade fires when a spawn link that already existed becomes provable. Two
+cases produce that. A journal replay can recover a parent birth record the
+snapshot did not hold, completing a chain that was previously broken. An
+adapter addition can make an existing ancestor recognizable as a session root,
+so a chain of recorded links that ended nowhere now ends at a root. The
+direction is one-way: nothing downgrades a claim, and only a key mismatch
+invalidates one. Coverage is measured after upgrades are applied, so the
+reported number reflects what the engine actually knows.
+
+Birth detection compares two snapshots by key rather than by process
+identifier. A process is new when its `(pid, start_time)` pair is absent from
+the previous snapshot, and gone when its pair is absent from the current one.
+Comparing bare identifiers would call a reused identifier an old process, which
+on this machine is not hypothetical. The parent's start time is read live
+during the same capture, so the recorded `parent_key` names the parent that
+actually existed at that moment rather than whatever later holds the number.
 
 ### Harness adapters
 
@@ -498,15 +593,30 @@ recorded for display and for earlier notification.
 | `ACTIVE` | Owner alive, or a live parent holds the process | No |
 | `OWNER_GONE` | Owner exit recorded, process still alive | No |
 | `GRACE_PERIOD` | Waiting out `lifecycle_grace` for the class | No |
-| `ORPHAN_CANDIDATE` | Window expired, confirmations accumulating | No |
+| `ORPHAN_CANDIDATE` | Window budget spent, confirmations accumulating | No |
 | `CONFIRMED_ORPHAN` | All six conditions of R6 hold | Phase B only |
-| `REPORTED` | Surfaced to the user, no action taken | No |
 | `RECLAIM_REQUESTED` | Phase B, kill authorized and re-verifying | Phase B only |
 | `RECLAIMED` | Phase B, process terminated | Terminal |
 | `RECLAIM_FAILED` | Phase B, kill aborted or refused | No |
-| `ADOPTED` | A live owner claimed the process again | No |
 | `UNATTRIBUTED` | No ownership channel resolved | Never |
 | `EXITED` | Process is gone | Terminal |
+
+Reporting is a display flag on a record rather than a state. `CONFIRMED_ORPHAN`
+carries a boolean marking whether the user has already seen it, so a confirmed
+process stays in `CONFIRMED_ORPHAN` and remains reachable by the phase B edge.
+An earlier draft made `REPORTED` a state, which stranded every confirmed
+process in a dead end and made `RECLAIM_REQUESTED` unreachable.
+
+Adoption is an event rather than a state, so a record never rests in an
+`ADOPTED` state. Adoption returns the process directly to `ACTIVE`, and the
+transition record names adoption as the trigger.
+
+Adoption has one precise meaning. The process gains a live parent when its
+current parent process identifier is neither 1 nor absent, and that parent
+resolves to a live process whose PID and start time are both readable. An
+unreadable parent is not adoption, because unknown never counts as evidence in
+either direction. A process also returns to `ACTIVE` when its session root key
+is observed alive again, or when a claim upgrade attaches it to a live session.
 
 ### Transitions
 
@@ -517,17 +627,31 @@ recorded for display and for earlier notification.
 | `ACTIVE` | `OWNER_GONE` | Owner exit event recorded |
 | `OWNER_GONE` | `GRACE_PERIOD` | First scan after the exit event |
 | `OWNER_GONE` | `ACTIVE` | Owner key observed alive and exit source was `poll_absent` |
-| `GRACE_PERIOD` | `ORPHAN_CANDIDATE` | `lifecycle_grace` for the class elapsed, with no sleep gap inside it |
-| `GRACE_PERIOD` | `ACTIVE` | Process gains a live parent or a live session claim |
-| `ORPHAN_CANDIDATE` | `CONFIRMED_ORPHAN` | N consecutive confirming scans and R6 satisfied |
-| `ORPHAN_CANDIDATE` | `GRACE_PERIOD` | A confirmation fails; the counter and the window reset |
+| `GRACE_PERIOD` | `ORPHAN_CANDIDATE` | Awake-time accumulator reached `lifecycle_grace` for the class |
+| `GRACE_PERIOD` | `ACTIVE` | Adoption |
+| `ORPHAN_CANDIDATE` | `CONFIRMED_ORPHAN` | Confirmation count reached and R6 satisfied |
+| `ORPHAN_CANDIDATE` | `GRACE_PERIOD` | A condition of R6 is observed false; counter and accumulator both reset |
 | `ORPHAN_CANDIDATE` | `ACTIVE` | Adoption |
-| `CONFIRMED_ORPHAN` | `REPORTED` | Phase A, always |
-| `CONFIRMED_ORPHAN` | `ACTIVE` | Adoption, which is available at every stage |
+| `CONFIRMED_ORPHAN` | `ACTIVE` | Adoption |
 | `CONFIRMED_ORPHAN` | `RECLAIM_REQUESTED` | Phase B only, with the user opt-in set |
 | `RECLAIM_REQUESTED` | `RECLAIMED` | Live re-verification passed and the signal succeeded |
 | `RECLAIM_REQUESTED` | `RECLAIM_FAILED` | Re-verification failed, or the signal failed |
+| `RECLAIM_REQUESTED` | `ACTIVE` | Re-verification observed adoption; the kill is abandoned |
+| `RECLAIM_FAILED` | `ORPHAN_CANDIDATE` | Backoff elapsed; the process re-earns confirmations before any retry |
+| `RECLAIM_FAILED` | `ACTIVE` | Adoption |
+| `UNATTRIBUTED` | `ACTIVE` | A claim upgrade resolved ownership to a live session |
 | any | `EXITED` | The process key is no longer present |
+
+Two rules govern this table. Every state except `EXITED` and `RECLAIMED` has an
+edge back to `ACTIVE`, which is what R7 requires, and `RECLAIM_FAILED` returns
+to candidacy rather than retrying a kill directly, so a failed attempt must
+re-earn its confirmations. Retry backoff starts at one minute of awake time and
+doubles to a one hour cap.
+
+A confirmation only fails when a required condition is observed to be false. An
+unreadable condition is neither a confirmation nor a failure: the counter holds
+where it is, and nothing resets. This keeps a transient read error from
+restarting a window that a real observation had already earned.
 
 ### Class windows
 
@@ -542,16 +666,51 @@ The per-class window is configured as `lifecycle_grace`, keyed by class.
 | unclassified | never | Absence of knowledge is not evidence of abandonment |
 | unattributed | never | No owner means no owner death, at any age |
 
-Confirmation count defaults to 3 consecutive scans, which at the 30 second scan
-interval adds at least 90 seconds on top of the window. Confirmations must be
-consecutive, and any sleep gap resets the counter.
+Confirmation count defaults to 3 confirming scans, which at the 30 second scan
+interval adds at least 90 seconds of awake time on top of the window.
+Confirmations accumulate across sleep, and they need not be consecutive in wall
+clock terms.
+
+### Sleep semantics
+
+Sleep pauses a lifecycle window. It never resets one and never invalidates one.
+
+Every window is an awake-time accumulator rather than a wall-clock deadline.
+Each scan adds the awake interval since the previous scan to the accumulator. A
+sleep gap contributes zero to the accumulator, and the window resumes from
+where it stopped on wake. Candidacy arrives when the accumulator reaches
+`lifecycle_grace` for the class, however many sleeps happened along the way.
+Confirmation counters behave the same way: a sleep gap between the second and
+third confirming scan leaves the counter at two rather than clearing it.
+
+The measured behavior of this machine forces that rule. Averaged over 7 full
+days of the retained power log, the machine enters sleep 123 times a day. Of
+880 dark-wake bursts in that log, the median awake burst lasts 11 seconds, the
+ninetieth percentile lasts 50 seconds, and 95 per cent are shorter than 5
+minutes. A rule requiring a gap-free window would therefore never complete the
+5 minute window for a server class while the machine is unattended, and would
+never complete the 30 minute window at all. A rule that resets on any gap is
+worse, because it guarantees the accumulator returns to zero roughly every
+minute overnight. Either choice makes overnight reclaim impossible, which is
+precisely when leaked processes pile up.
+
+Accumulators are persisted, so they survive a restart. Each transition record
+carries the accumulated awake milliseconds and the confirmation count at the
+moment it was written, and the engine resumes from the last record rather than
+from a wall-clock stamp. A daemon restart, a crash, or a reboot therefore costs
+the time actually spent down rather than the progress already earned.
+
+Gap detection compares a wall-clock stamp against a monotonic clock. When the
+two disagree by more than one scan interval, the difference is a sleep gap, and
+the watcher performs a full re-enumeration on wake before crediting any awake
+time.
 
 Two settings sound similar and mean different things, so the names are fixed
 here. `grace_period` is the existing key, and it keeps its current meaning as
 the wait between `SIGTERM` and escalation. `lifecycle_grace` is the new key,
-and it is the per-class wait between a recorded owner exit and candidacy. The
-lifecycle state is still called `GRACE_PERIOD`, because it names a position in
-the state machine rather than a configuration key.
+and it is the per-class awake-time budget between a recorded owner exit and
+candidacy. The lifecycle state is still called `GRACE_PERIOD`, because it names
+a position in the state machine rather than a configuration key.
 
 ### Storage
 
@@ -559,27 +718,48 @@ The store is an append-only journal of newline-delimited JSON, plus a periodic
 compacted snapshot, plus an in-memory index rebuilt at start.
 
 This choice beats an embedded database for this workload. There is one writer,
-one reader, and a fixed set of three queries. The repository already carries
-tested size-bounded file rotation, so retention needs no new machinery. An
-append-only file is crash-safe by construction: a torn final line is discarded
-at load, and every record before it stands. Adding a database engine would
-introduce either a cgo dependency, which complicates the release pipeline, or a
-pure-Go engine whose value is unused at this scale. The condition that would
-reverse this decision is a second writer process or ad-hoc historical queries
-beyond the fixed set.
+one reader, and a fixed set of three queries. An append-only file is crash-safe
+by construction: a torn final line is discarded at load, and every record
+before it stands. Adding a database engine would introduce either a cgo
+dependency, which complicates the release pipeline, or a pure-Go engine whose
+value is unused at this scale. The condition that would reverse this decision
+is a second writer process or ad-hoc historical queries beyond the fixed set.
+
+The journal owns its own rotation rather than reusing the logger. The existing
+rotation code is bound to the log file's own configuration, size limits, and
+file mode, and the store needs different limits and a stricter mode. The store
+creates its directory at 0700 and every file at 0600, because a birth record
+holds command lines and repository paths even after redaction. Sharing the log
+rotation would either loosen those permissions or entangle two retention
+policies, so the store gets a small rotation of its own, modelled on the
+existing one and tested separately.
 
 Volume control matters more than format. The watcher holds every live process
 in memory, because ancestry chains need the full tree, and persists only
 records that are session-attributed or pattern-matched. On this machine that is
 96 of 755 processes by environment marker alone. The idle sample measured 2 new
 processes in 30 seconds, which extrapolates to about 5,800 births a day, and an
-active day is budgeted at 25,000. At about 512 bytes for a persisted record and
-a 15 per cent persistence rate, the journal grows by roughly 2 megabytes a day.
+active day is budgeted at 25,000.
+
+The daily budget totals about 3 megabytes. Persisted births contribute roughly
+2 megabytes, at about 512 bytes a record and a 15 per cent persistence rate.
+Heartbeats at one a minute contribute about 0.6 megabytes. Transitions and
+owner exit events contribute a few hundred kilobytes, because they are written
+per state change rather than per scan. Across the 7 day retention window that
+is about 21 megabytes, which fits under the ceiling with headroom for an
+unusually busy day.
 
 Retention is 7 days for records of exited processes, unbounded for records of
 live processes, and a 32 megabyte hard ceiling enforced by rotation. Snapshots
 are written every 5 minutes and on clean shutdown, so a restart replays only
 the journal tail.
+
+Snapshot and journal can disagree after a crash, and the rule is to take the
+more restrictive answer. When the snapshot shows `ACTIVE` and the journal tail
+shows `ORPHAN_CANDIDATE`, the engine adopts `GRACE_PERIOD` with the recorded
+accumulator rather than either extreme, so progress is preserved and eligibility
+is not. A member record whose session root has no matching record after recovery
+is demoted to `UNATTRIBUTED`, never joined to a guessed session.
 
 ## Failure modes and degraded behavior
 
@@ -587,6 +767,16 @@ Watcher not running, not installed, or crashed. Every process is unattributed,
 so nothing is eligible under attribution gating, and the scanner behaves as it
 does today. This is the safe direction by construction, because attribution can
 only subtract eligibility.
+
+Watcher and scanner share one process, so their failure modes must not share a
+fate. The watcher runs on its own goroutine with its own ticker, and every poll
+body is wrapped in a deferred recover, so a panic in parsing a malformed
+argument buffer kills the poll rather than the daemon. Three consecutive
+panicking polls stop the watcher, mark attribution untrusted, and leave the
+scanner running with today's behavior. The scanner never calls into watcher
+code on its scan path; it reads the store through a lookup that returns "not
+attributed" on any error. Nothing in the watcher holds a lock the scanner
+needs, so a stuck watcher cannot stall a scan.
 
 Watcher heartbeat stale. Missing a heartbeat for 3 intervals marks attribution
 data untrusted. All states freeze, no state advances toward candidacy, and
@@ -596,11 +786,13 @@ Store corrupted or truncated. The loader discards the unparseable tail and
 keeps the valid prefix. Records lost this way become unattributed. A store with
 an unrecognized schema version is ignored entirely rather than guessed at.
 
-Sleep and wake gaps. Timers use wall-clock stamps validated against a monotonic
-clock. When the two disagree by more than one interval, the difference is a
-sleep gap. A gap never counts toward a window, it resets confirmation counters,
-and the watcher performs a full re-enumeration on wake. Births during sleep are
-unattributed rather than reconstructed.
+Sleep and wake gaps. A gap pauses every lifecycle window and every confirmation
+counter, and it neither resets nor invalidates them. Windows count awake time
+only, as specified under Sleep semantics, and the accumulators persist in
+transition records so a restart during a gap loses nothing. The watcher
+performs a full re-enumeration on wake before crediting awake time. Births that
+happened during the gap were never witnessed, so they fall to the backfill path
+and are `inferred` at best rather than reconstructed.
 
 PID reuse. Identity is the pair of PID and start time, so a reused PID does not
 match the stored key. The record is invalidated and the new process starts
@@ -661,10 +853,42 @@ to `inferred`, which is display-only. Same-user restriction and the built-in
 blocklist stay in force underneath.
 
 The adapter data file is user-writable, so it is treated as configuration
-rather than as authority. A bad entry can mislabel a root or move a session
-boundary, and it can never grant eligibility, because eligibility still
-requires a recorded spawn link, a recorded root exit, an expired window,
-consecutive confirmations, and a live strong signal.
+rather than as authority. The safety bound it obeys must be stated exactly,
+because an earlier draft overstated it.
+
+The true bound: attribution can never make a process eligible that the phase A
+path would not already permit. The phase B eligible set is a subset of the
+phase A eligible set, and every existing check still applies, meaning the
+pattern match, the strong lifecycle signal on a live read, the same-user
+restriction, the built-in blocklist, and full identity re-verification
+immediately before signalling.
+
+What the bound does not promise: inside that set, a wrong adapter entry can
+still cause a wrong kill. Naming a shell or a terminal emulator as a harness
+root would make every command run in that terminal look like a session member,
+and closing the terminal would then look like a session ending. The processes
+affected are ones the phase A path already permits, so the blast radius is
+bounded, and it is not zero.
+
+The registry therefore validates every descriptor at load and rejects four
+shapes outright. It rejects a root rule naming a shell, a terminal emulator, a
+multiplexer, `launchd`, process 1, or any entry on the built-in blocklist. It
+rejects a rule that would match an ancestor of another recognized root, because
+roots must not nest. It rejects a rule with no discriminating field, meaning
+one that would match on a bare name shared with a system binary. It bounds the
+ancestry walk at a maximum link depth, 32 by default, beyond which attribution
+stops and the process is recorded as unattributed rather than joined to a
+distant session. A rejected descriptor is skipped with a `doctor` finding, and
+the rest of the file still loads.
+
+The process-arguments reader carries its own risk and is worth naming
+separately. It reads another process's argument and environment memory through
+`KERN_PROCARGS2`, which is the most sensitive read anywhere in this design. It
+runs same-user only, it never writes to a foreign process, it treats the packed
+buffer as untrusted input and bounds every length it parses, and it returns
+nothing to a caller without passing the redaction filter first. A parse failure
+returns an error rather than a partial result, because a half-parsed
+environment block is exactly how a secret leaks into a log.
 
 The store is a user-writable file, so it is not an authority. Nothing recorded
 in it may authorize an action that a live re-read would not independently
@@ -682,22 +906,45 @@ it.
 
 ## Observability and audit evidence
 
-The watcher writes a heartbeat record every interval carrying the interval,
-enumerations completed, births seen, births persisted, environment read
-failures, sleep gap milliseconds, tracked process count, attributed count, and
-journal size. Attribution coverage is derived from the last two.
+The heartbeat cadence is decoupled from the poll cadence. The watcher polls
+every second and writes a heartbeat every 60 seconds, carrying counters
+aggregated over that minute: polls completed, births seen, births persisted,
+environment read failures, sleep gap milliseconds, tracked process count,
+attributed count, upgraded count, and journal size. Attribution coverage is
+derived from the tracked and attributed counters after upgrades are applied.
+
+Writing a heartbeat per poll was the original plan and it does not survive
+arithmetic. At roughly 400 bytes a record, one heartbeat a second is about 35
+megabytes a day, which alone breaks the 32 megabyte ceiling in under a day and
+would push the coverage history out of the store long before a 7 day
+measurement could finish. At one a minute the same series costs about 0.6
+megabytes a day and 4 megabytes across the full 7 day window, which fits inside
+retention with room to spare.
 
 Every state transition is written with its trigger, its evidence, the
-confirmation counter, and the window deadline. A user can therefore reconstruct
-why any process reached any state, which is the same standard the existing
-per-kill signal logs set.
+confirmation counter, and the accumulated awake milliseconds. A user can
+therefore reconstruct why any process reached any state, which is the same
+standard the existing per-kill signal logs set.
 
 `devreap doctor` reports watcher liveness, last heartbeat age, store size,
-snapshot age, schema version, and coverage. A stale watcher is an explicit
-failure line rather than silence.
+snapshot age, schema version, and coverage. Staleness is judged in awake time,
+not wall-clock time, so an overnight sleep does not report a healthy watcher as
+dead. The watcher is stale when three heartbeat intervals of awake time pass
+with no heartbeat, and a stale watcher is an explicit failure line rather than
+silence.
 
 `devreap status` prints coverage and the count of processes in each lifecycle
 state.
+
+`devreap top --json` emits the same view as machine-readable output.
+
+`devreap evidence <session>` exports one session as a single JSON document: the
+spawn tree with per-process keys and link depths, the birth timings, the owner
+exit event, every lifecycle transition with its trigger and evidence, and the
+resident memory series. This is the artifact a developer attaches to an
+upstream bug report, and the market research named its absence as an unfilled
+gap across every tool in this category. The export runs the same redaction
+filter as every other output path.
 
 `devreap top` renders the operator view.
 
@@ -728,22 +975,40 @@ Load is one machine with a few hundred to about a thousand processes. Measured
 here: 755 processes, 96 carrying session markers, 9 sessions, 7 project
 directories.
 
-The watcher polls once a second. A full enumeration with environment reads
-measured 56 to 64 milliseconds through `ps`, including process spawn overhead
-that an in-process `sysctl` read avoids. Environment reads add 11 to 19
-milliseconds over the 45 millisecond baseline. The budget is under 1 per cent
-of one core, and the poll interval is configurable upward if a slower machine
-misses it.
+The watcher polls once a second, and the per-poll cost is the diff, not a full
+metadata collection. That distinction carries the budget, so it is stated
+precisely rather than borrowed from the earlier measurement.
+
+Each poll does one `KERN_PROC_ALL` call and compares keys. Measured on this
+machine at roughly 800 processes: a bare identifier list costs under 1
+millisecond, adding start time costs 8 to 9 milliseconds, and adding the parent
+identifier costs 13 to 15 milliseconds. The parent identifier and the start
+time both arrive inside the same `kinfo_proc` array, so the realistic
+steady-state poll is that single call plus a key comparison.
+
+Full metadata collection, meaning the executable path, the command line, and
+the environment through `KERN_PROCARGS2`, runs only for processes that are new
+in this poll. At the measured idle rate of about 2 births per 30 seconds, that
+work is idle most seconds. The earlier figure of 56 to 64 milliseconds measured
+a full environment read across every process through the `ps` binary, which is
+neither what the watcher does per poll nor a fair basis for the budget, and it
+is no longer cited as one.
+
+The resulting steady-state budget is roughly 15 milliseconds per second, which
+is about 1.5 per cent of one core, with brief spikes when a session starts and
+spawns a burst of children. The poll interval is configurable upward, and
+phase A reports the actual poll duration in the heartbeat so the number is
+verified rather than assumed.
 
 The `kqueue` watches cost effectively nothing, because there is one per session
-leader and about nine leaders exist here.
+root and about nine roots exist here.
 
 Memory holds one entry per live process plus the session index, which is
 kilobytes.
 
-Disk grows by roughly 2 megabytes a day at the estimated persistence rate, is
-capped at 32 megabytes by rotation, and the existing logger already reserves 50
-megabytes for its own files.
+Disk grows by roughly 3 megabytes a day, totals about 21 megabytes across the
+7 day retention window, and is capped at 32 megabytes by the store's own
+rotation. The existing logger keeps its separate 50 megabyte reservation.
 
 There is no monetary cost. Nothing calls a paid service, and nothing leaves the
 machine.
@@ -787,8 +1052,42 @@ including each recovery path and the confirmation reset, and asserts that no
 input sequence reaches `CONFIRMED_ORPHAN` without all six conditions of R6.
 
 A clock injection test simulates sleep and wake by advancing wall time without
-advancing the monotonic clock. It asserts that windows do not expire across the
-gap, that confirmation counters reset, and that a full re-enumeration follows.
+advancing the monotonic clock. It asserts that the gap credits zero awake time,
+that the accumulator and the confirmation counter both survive the gap
+unchanged, that a full re-enumeration follows the wake, and that a window
+spanning many gaps still completes once enough awake time accrues. A companion
+test drives the measured overnight profile, meaning repeated 11 second awake
+bursts, and asserts a 5 minute window completes rather than stalling forever.
+
+A restart test writes transition records mid-window, discards the in-memory
+state, reloads from the journal, and asserts the accumulator and confirmation
+count resume at their recorded values rather than at zero.
+
+A recovery test seeds a snapshot and a journal tail that disagree, and asserts
+the engine adopts the more restrictive state with the recorded accumulator
+preserved, and that a member record with no surviving root is demoted to
+`UNATTRIBUTED`.
+
+A claim upgrade test starts a process at `inferred`, later supplies the missing
+parent record, and asserts an upgrade record is written, the birth record is
+untouched, the claim reads `observed`, and coverage counts it after the upgrade.
+
+A state machine reachability test asserts that `RECLAIM_REQUESTED` is reachable
+from `CONFIRMED_ORPHAN`, that every state except `EXITED` and `RECLAIMED` has
+an edge back to `ACTIVE`, and that no state is a dead end.
+
+A procargs test parses a captured `KERN_PROCARGS2` buffer, a truncated one, and
+one with a corrupt length prefix, asserting a clean error rather than a partial
+result on the last two.
+
+An adapter validation test asserts that descriptors naming a shell, a terminal
+emulator, `launchd`, or a blocklisted binary are rejected at load, that a
+nesting root is rejected, that the rest of the file still loads, and that each
+rejection produces a `doctor` finding.
+
+An evidence export test asserts the exported document contains the spawn tree,
+the timings, the owner exit, and every transition, and that it passes the
+redaction filter.
 
 A PID reuse test reuses a PID with a different start time and asserts the
 stored record is invalidated and the process becomes unattributed.
@@ -851,7 +1150,7 @@ subtract it is a new design and a new approval.
 ## Alternatives and architecture decisions
 
 Decision 1: fast polling with environment capture is the primary birth
-mechanism, and `kqueue` `NOTE_EXIT` on session leaders is the primary death
+mechanism, and `kqueue` `NOTE_EXIT` on session roots is the primary death
 mechanism.
 
 The Endpoint Security framework was rejected. It gives exact exec events with
@@ -870,10 +1169,11 @@ modern Darwin. The same filter is excellent for the death half of the problem,
 where the PID is known in advance and there are about nine of them.
 
 The residual race is stated plainly. A process born and orphaned inside one
-poll interval is never observed with a live parent. The environment channel
-covers most of that case, because the marker is captured at exec and outlives
-the parent, which is why environment is the first channel rather than a
-fallback.
+poll interval is never observed with a live parent, so no spawn link exists for
+it. Backfill reaches part of that case, because a marker is captured at exec
+and outlives the parent, and the resulting claim is `inferred` and display
+only. Shrinking the race means shortening the poll interval, which is a cost
+knob rather than a correctness fix.
 
 Decision 2: watched ancestry is the primary ownership channel, and vendor
 markers are demoted to corroboration and backfill.
@@ -909,9 +1209,25 @@ a compiled-in generic fallback. Adding a harness becomes a data change instead
 of a release, matching how the pattern registry already works. The fallback is
 compiled in so that a missing or broken data file cannot disable recognition.
 
+Decision 2b: the design builds its own `KERN_PROCARGS2` reader rather than
+calling the process library. This is not a preference. The library's
+environment call returns "not implemented yet" for every process on this
+platform, verified in its source, so the environment channel would silently
+return nothing at all if the design assumed it. The same reader also takes the
+bulk snapshot through `KERN_PROC_ALL`, which returns parent, group, terminal,
+and start time for every process in one call rather than one call per field per
+process.
+
+Decision 2c: lifecycle windows count awake time and pause across sleep, rather
+than running on wall-clock deadlines. The measured sleep profile of this
+machine leaves no alternative that reclaims anything overnight, and the
+reasoning is recorded under Sleep semantics.
+
 Decision 3: an append-only journal with snapshots, rather than an embedded
-database. One writer, three fixed queries, existing tested rotation, and no new
-dependency. The reversing condition is named in the storage section.
+database. One writer, three fixed queries, and no new dependency. The store
+carries its own rotation at mode 0600 rather than reusing the logger's, because
+the two need different limits and different permissions. The reversing
+condition is named in the storage section.
 
 Decision 4: attribution subtracts eligibility and never adds it. This is the
 single property that makes the whole feature safe to ship, because the worst
@@ -952,26 +1268,36 @@ ratified decision in the preceding section.
 Each step below is independently testable and independently revertible, and no
 step changes kill behavior.
 
-1. Harness adapter registry: the descriptor type, the data file loader with
-   built-in entries plus user extras, the compiled-in generic descriptor, and
-   recognition tests against the four verified shapes. No watcher, no store,
-   no daemon change.
-2. Ownership resolution as a pure function over already-collected process
-   fields and a spawn-link index, with the confidence ladder and the secret
-   allowlist, plus its unit tests.
-3. Store package: record types, append, load with a torn-tail test, snapshot,
-   rotation, retention, and schema version handling.
-4. Lifecycle engine as a pure state machine over injected events and an
-   injected clock, with the full transition table and the sleep gap tests.
-5. Watcher loop behind a configuration key that defaults off, writing births,
-   spawn links, and heartbeats only, with no consumer wired in.
-6. Owner exit watches through `kqueue`, with poll absence as the fallback
+1. Redaction filter: the variable-name allowlist, token-shaped argument
+   masking, and its tests. Nothing else may read a foreign process until this
+   exists, because it is the choke point every later step depends on.
+2. Process-arguments reader: `KERN_PROC_ALL` bulk snapshot and
+   `KERN_PROCARGS2` single-process reads, bounded parsing, clean errors on
+   truncated buffers, and results handed straight to the redaction filter.
+3. Harness adapter registry: the descriptor type, the data file loader with
+   built-in entries plus user extras, load-time validation with its rejection
+   rules, the compiled-in generic descriptor, and recognition tests against the
+   four verified shapes.
+4. Ownership resolution as a pure function over already-collected process
+   fields and a spawn-link index, with the confidence ladder, claim upgrades,
+   and the link depth bound, plus its unit tests.
+5. Store package: record types, append, load with a torn-tail test, snapshot,
+   its own rotation at 0600, retention, recovery disagreement rules, and schema
+   version handling.
+6. Lifecycle engine as a pure state machine over injected events and an
+   injected clock, with the full transition table, the awake-time accumulators,
+   and the sleep and restart tests.
+7. Watcher loop behind a configuration key that defaults off, writing births,
+   spawn links, and 60 second heartbeats only, with panic isolation and no
+   consumer wired in.
+8. Owner exit watches through `kqueue`, with poll absence as the fallback
    source.
-7. Wire the lifecycle engine to scan results, still with no effect on
+9. Wire the lifecycle engine to scan results, still with no effect on
    eligibility, and add coverage reporting to `status` and `doctor`.
-8. `devreap top` as a read-only table view.
-9. Phase A default on, documented in the README as observe-only.
-10. Phase B gating behind a separate opt-in key, with the subset test as the
+10. `devreap top` as a read-only table view, with `--json` output.
+11. `devreap evidence <session>` export.
+12. Phase A default on, documented in the README as observe-only.
+13. Phase B gating behind a separate opt-in key, with the subset test as the
     gate on the change.
 
 Commit boundaries follow the same numbering, one commit each, each green under
@@ -983,13 +1309,21 @@ Phase A is complete when all of the following hold on the maintainer's machine
 over 7 consecutive days of ordinary use.
 
 Attribution coverage reaches 90 per cent or higher of pattern-matched
-processes, measured from heartbeat records.
+processes, counted after claim upgrades are applied. The measurement reads the
+60 second heartbeat series, which yields about 10,080 samples across 7 days and
+survives retention, and it is reported as the median of daily medians rather
+than a single instantaneous reading.
 
-Watcher uptime reaches 99 per cent or higher of wall time excluding sleep,
-measured from heartbeat gaps.
+Watcher uptime reaches 99 per cent or higher of awake time, measured as the
+share of expected 60 second heartbeats actually present, with sleep gaps
+subtracted from the expected count.
 
-The journal stays under the 32 megabyte ceiling, and rotation is observed to
-work at least once.
+The journal stays under the 32 megabyte ceiling across the full 7 days, the
+store's own rotation is observed to run at least once, and every store file is
+observed at mode 0600.
+
+The measured poll duration reported in the heartbeat stays within the stated
+budget, confirming the performance claim rather than assuming it.
 
 At least one real session end produces a recorded owner exit, a correct
 per-session tree in `top`, and a state progression that matches the class
