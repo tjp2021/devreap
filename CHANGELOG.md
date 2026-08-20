@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-08-19
+
+### Added
+
+- A `hygiene` config section that names the machine-specific targets for `devreap hygiene`. It holds `git_repos` and `zombie_dotdirs`. A leading `~/` in a repository path is expanded.
+
+### Changed
+
+- The sensitive-file check scans the repositories listed in `hygiene.git_repos` instead of a hardcoded `~/YNG` path, and it names the repository each hit came from.
+- The zombie-dotdir check reads its directory names from `hygiene.zombie_dotdirs` instead of a hardcoded list.
+- Both checks skip themselves when their list is empty, so a fresh install audits nothing machine-specific until someone configures it.
+- The built-in sensitive-file patterns are now generic. The personal credential filenames are gone.
+
 ## [0.2.0] - 2026-08-19
 
 ### Changed
@@ -51,5 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GoReleaser-based release workflow with Homebrew tap support
 - MIT license
 
+[0.2.1]: https://github.com/tjp2021/devreap/releases/tag/v0.2.1
 [0.2.0]: https://github.com/tjp2021/devreap/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tjp2021/devreap/releases/tag/v0.1.0
