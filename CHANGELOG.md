@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Session attribution. devreap now records who started each process instead of inferring it from circumstantial signals. A watcher polls the process table each second, records the spawn link it observed, and writes a durable birth record with an ownership claim. Ownership is led by watched ancestry, which works for any harness because every agent tool spawns children through the same system calls, so a harness that publishes nothing and is missing from the descriptor table still reaches full confidence, labelled `unknown-harness`. Environment markers and process groups corroborate and backfill, and a claim resting on either alone is reportable and never gates an action.
+- A per-process lifecycle state machine. Every tracked process holds one state and every transition is written with its trigger, its evidence, the confirmation counter, and the accumulated awake time. Windows count awake time only: sleep pauses them and never resets them, which is what makes overnight cleanup possible on a laptop that sleeps around 123 times a day.
+- `devreap top` and `devreap top --json`, a read-only view of per-session process trees with resident memory totals, per-process state, and time since owner exit. The unattributed bucket is shown separately, so a coverage gap is visible rather than hidden.
+- `devreap evidence <session>`, which exports one session's spawn tree, birth timings, owner exit event, and full transition history as a single JSON document to attach to an upstream bug report.
+- Owner exit detection through kqueue `NOTE_EXIT` on recognised session roots, with poll absence as the fallback source.
+- An append-only journal with periodic snapshots, its own rotation at mode 0600, and per-type retention floors. The 32 megabyte ceiling is enforced by compaction, so a week of records still inside their retention floor leaves the journal briefly over it with a `doctor` finding rather than dropping the measurement series.
+- A redaction filter between every foreign-process read and every consumer. It keeps only the session identifier, the project directory, and the agent name out of an environment, and masks token-shaped and key-shaped command-line arguments.
+- An `attribution` config section, and `lifecycle_grace`, the per-class awake-time budget between a recorded owner exit and orphan candidacy. A user map merges with the built-in table and never replaces it, per the P0-8 blocklist-replacement finding. A missing class and a zero value both mean never, and neither ever means immediately.
+- Coverage and watcher health reporting in `devreap status` and `devreap doctor`, with staleness judged in awake time so an overnight sleep never reads as a dead watcher.
+- `docs/attribution.md`, covering the ownership channels, the confidence ladder, the harness table, the rules a user descriptor file must pass, the lifecycle, the storage model, and every degraded path.
+
+### Changed
+
+- Attribution is on by default and observe-only. It records and reports, and it holds no kill path in its code.
+- The kill path calls one gate function instead of the strong-signal check directly. The existing requirement is evaluated first and on its own, and every check after it can only return false, so attribution can never make a process eligible that the previous path would not already permit. Phase A leaves the gate off, which makes the call reduce exactly to the check it replaced.
+
+### Notes
+
+- Phase B, in which attribution may narrow the kill-eligible set, ships as inert structure behind `attribution.gate_kills`. It defaults false, it is a separate opt-in from the existing kill opt-in, and no install or upgrade sets it. A test asserts no shipped code path can reach the reclaim states.
+
 ## [0.2.2] - 2026-08-19
 
 ### Fixed
