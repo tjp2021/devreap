@@ -348,3 +348,31 @@ func TestCLI_StatusAndDoctorReportAttribution(t *testing.T) {
 		}
 	}
 }
+
+// TestShortSessionKeepsTheTableAligned covers the case a live run surfaced. A
+// harness that publishes its own session identifier can supply a full 36
+// character one, which pushed every later column out of line.
+func TestShortSessionKeepsTheTableAligned(t *testing.T) {
+	cases := map[string]int{
+		"5f1c9a2e":                             8,
+		"":                                     0,
+		"94e30d2e-467d-4e9c-aa7e-d189e6b04d27": sessionColumn,
+		"exactlytwelv":                         12,
+	}
+	for id, want := range cases {
+		got := shortSession(id)
+		if len([]rune(got)) != want {
+			t.Errorf("shortSession(%q) is %d runes wide, want %d", id, len([]rune(got)), want)
+		}
+		if len([]rune(got)) > sessionColumn {
+			t.Errorf("shortSession(%q) = %q, wider than the column", id, got)
+		}
+	}
+
+	// A truncated identifier still says which session it is, and the full one
+	// stays available for devreap evidence.
+	full := "94e30d2e-467d-4e9c-aa7e-d189e6b04d27"
+	if !strings.HasPrefix(shortSession(full), full[:8]) {
+		t.Errorf("shortSession(%q) = %q, which does not identify the session", full, shortSession(full))
+	}
+}

@@ -15,6 +15,21 @@ import (
 
 var topJSON bool
 
+// sessionColumn is the width of the session identifier column. A derived
+// identifier is 8 characters, and a vendor-supplied one can be a full 36
+// character identifier that would otherwise push every later column out of line.
+const sessionColumn = 12
+
+// shortSession fits an identifier in the table without hiding which session it
+// is. The full identifier stays in the JSON output and is what devreap evidence
+// takes, and the tree below the table prints it in full.
+func shortSession(id string) string {
+	if len(id) <= sessionColumn {
+		return id
+	}
+	return id[:sessionColumn-1] + "…"
+}
+
 var topCmd = &cobra.Command{
 	Use:   "top",
 	Short: "Show per-session process trees, memory totals, and owner exit times",
@@ -55,10 +70,10 @@ func printTop(view *attribution.View, now time.Time) {
 		return
 	}
 
-	fmt.Printf("%-9s %-16s %-22s %-16s %6s %8s\n", "SESSION", "HARNESS", "REPO", "OWNER", "PROCS", "RSS")
+	fmt.Printf("%-*s %-16s %-22s %-16s %6s %8s\n", sessionColumn, "SESSION", "HARNESS", "REPO", "OWNER", "PROCS", "RSS")
 	for _, session := range view.Sessions {
-		fmt.Printf("%-9s %-16s %-22s %-16s %6d %8s\n",
-			session.SessionID,
+		fmt.Printf("%-*s %-16s %-22s %-16s %6d %8s\n",
+			sessionColumn, shortSession(session.SessionID),
 			truncate(session.Harness, 16),
 			truncate(shortenHome(session.Repo), 22),
 			ownerColumn(session, now),
@@ -67,8 +82,8 @@ func printTop(view *attribution.View, now time.Time) {
 		)
 	}
 	if len(view.Unattributed) > 0 {
-		fmt.Printf("%-9s %-16s %-22s %-16s %6d %8s\n",
-			"--", "--", "--", "unattributed", len(view.Unattributed), humanRSS(view.UnattributedRSS()))
+		fmt.Printf("%-*s %-16s %-22s %-16s %6d %8s\n",
+			sessionColumn, "--", "--", "--", "unattributed", len(view.Unattributed), humanRSS(view.UnattributedRSS()))
 	}
 
 	for _, session := range view.Sessions {
