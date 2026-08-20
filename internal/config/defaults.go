@@ -3,15 +3,15 @@ package config
 import "time"
 
 const (
-	DefaultScanInterval   = 30 * time.Second
-	DefaultKillThreshold  = 0.6
-	DefaultGracePeriod    = 5 * time.Second
-	DefaultLogDir         = "~/.local/share/devreap/logs"
-	DefaultConfigPath     = "~/.config/devreap/config.yaml"
-	DefaultMaxLogSize     = 10 * 1024 * 1024 // 10MB
-	DefaultMaxLogFiles    = 5
-	DefaultPidFile        = "~/.local/share/devreap/daemon.pid"
-	DefaultNotifyEnabled  = true
+	DefaultScanInterval  = 30 * time.Second
+	DefaultKillThreshold = 0.6
+	DefaultGracePeriod   = 5 * time.Second
+	DefaultLogDir        = "~/.local/share/devreap/logs"
+	DefaultConfigPath    = "~/.config/devreap/config.yaml"
+	DefaultMaxLogSize    = 10 * 1024 * 1024 // 10MB
+	DefaultMaxLogFiles   = 5
+	DefaultPidFile       = "~/.local/share/devreap/daemon.pid"
+	DefaultNotifyEnabled = true
 	// DefaultDryRun is true so a fresh install observes and reports without
 	// killing anything. Killing is opt-in: the user sets dry_run: false only
 	// after reviewing what devreap would have killed on their machine.

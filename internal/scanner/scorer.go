@@ -114,9 +114,9 @@ func HasStrongSignal(signals map[string]float64) bool {
 
 // Scorer computes orphan likelihood scores for processes using weighted signals.
 type Scorer struct {
-	weights  config.WeightConfig
-	ideAlive *bool // cached per scan cycle
-	procs    []ProcessInfo // reuse enumerated processes
+	weights     config.WeightConfig
+	ideAlive    *bool         // cached per scan cycle
+	procs       []ProcessInfo // reuse enumerated processes
 	currentUser string
 }
 

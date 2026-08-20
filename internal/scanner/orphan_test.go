@@ -209,8 +209,8 @@ func TestIDEDetection_EmptyProcessList(t *testing.T) {
 func TestIDEDetection_AllSignatures(t *testing.T) {
 	// Test each IDE signature is detected
 	tests := []struct {
-		name    string
-		cmdline string
+		name     string
+		cmdline  string
 		procName string
 	}{
 		{"VS Code", "/Applications/Visual Studio Code.app/Contents/MacOS/Electron", "Electron"},

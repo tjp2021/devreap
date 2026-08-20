@@ -21,11 +21,11 @@ import (
 
 // mockScanner returns pre-built scan results.
 type mockScanner struct {
-	mu      sync.Mutex
-	result  *scanner.ScanResult
-	err     error
-	calls   int
-	scanFn  func(ctx context.Context) (*scanner.ScanResult, error)
+	mu     sync.Mutex
+	result *scanner.ScanResult
+	err    error
+	calls  int
+	scanFn func(ctx context.Context) (*scanner.ScanResult, error)
 }
 
 func (m *mockScanner) Scan(ctx context.Context) (*scanner.ScanResult, error) {
