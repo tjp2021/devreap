@@ -1445,11 +1445,19 @@ Commit boundaries follow the same numbering, one commit each, each green under
 Phase A is complete when all of the following hold on the maintainer's machine
 over 7 consecutive days of ordinary use.
 
-Attribution coverage reaches 90 per cent or higher of pattern-matched
-processes, counted after claim upgrades are applied. The measurement reads the
-60 second heartbeat series, which yields about 10,080 samples across 7 days and
-survives retention, and it is reported as the median of daily medians rather
-than a single instantaneous reading.
+Attribution coverage reaches 90 per cent or higher, judged on the cohort of
+pattern-matched processes whose birth the watcher observed after the
+measurement window opened. Processes already running when the watcher started
+stay outside that cohort, because no birth record exists for them and no later
+claim upgrade can supply one. The measurement reads the 60 second heartbeat
+series, which yields about 10,080 samples across 7 days and survives retention,
+and it is reported as the median of daily medians rather than a single
+instantaneous reading.
+
+Raw coverage over every pattern-matched process, including the cold start set,
+is reported beside the cohort number. It records how fast that set drains, and
+it never decides this criterion. The soak log carries the ratified wording and
+the arithmetic.
 
 Watcher uptime reaches 99 per cent or higher of awake time, measured as the
 share of expected 60 second heartbeats actually present, with sleep gaps
