@@ -211,6 +211,9 @@ devreap logs                   # View recent daemon log entries (last 50)
 devreap logs -n 100            # Show last N entries
 devreap logs --level error     # Filter by severity (debug, info, warn, error)
 devreap logs --json            # Raw JSON lines, pipe to jq for filtering
+devreap top                    # Per-session process trees, memory totals, owner exit times
+devreap top --json             # Same view, machine-readable
+devreap evidence <session>     # Export one session's spawn tree and history as JSON
 devreap doctor                 # Diagnostics: config, patterns, permissions, MCP configs
 devreap patterns               # List all 18 built-in patterns
 devreap version                # Print version, commit, and build date
@@ -281,6 +284,87 @@ hygiene:
   zombie_dotdirs:
     - .some-uninstalled-tool
 ```
+
+## Session attribution
+
+devreap records who started each process. When a process is born, the watcher
+writes down the spawn link it saw. When that session's owner exits, it writes
+down when. So instead of guessing from circumstantial signals, devreap can tell
+you that process 3338 belongs to the agent session that started at 09:14 in
+repository X, and that the session ended 22 minutes ago.
+
+Run `devreap top` to see it:
+
+```
+SESSION   HARNESS          REPO                   OWNER             PROCS      RSS
+5f1c9a2e  claude-code-cli  ~/projects/example     exited 12m ago       11     4.2G
+a71b0c34  codex-cli        ~/projects/tools       alive                 6     1.1G
+--        --               --                     unattributed          9     0.7G
+
+  5f1c9a2e  exited 12m ago
+    node ./server.js --port 7333     pid 98925    1.4G  ORPHAN_CANDIDATE 2/3
+    node ./indexer.js                pid 98931    0.9G  GRACE_PERIOD 3m left
+    chrome --headless                pid 99010    1.9G  CONFIRMED_ORPHAN
+```
+
+**It's observe-only.** Attribution records, reports, and takes no action. It can
+only ever remove processes from the kill-eligible set, never add one, so the
+worst case of a wrong attribution is a missed orphan rather than a wrong kill.
+The kill path still asks for the strong lifecycle signal first and on its own,
+and nothing attribution knows can override that answer.
+
+**It works with any harness.** Ownership comes from the spawn link the watcher
+observed, and every agent tool spawns children through the same system calls. No
+vendor has to publish anything, and a harness missing from the descriptor table
+still gets full attribution, labelled `unknown-harness`. Vendor environment
+markers are enrichment layered on a mechanism that already works without them.
+
+**Nothing leaves your machine.** The watcher keeps only the session identifier,
+the project directory, and the agent name out of a process environment, and
+discards the rest before the record is written. Command lines pass through a
+redaction filter that masks token-shaped and key-shaped arguments. The store
+lives at mode 0700 with every file at 0600.
+
+`docs/attribution.md` covers the confidence ladder, the lifecycle states, the
+harness table, the storage model, and how to add your own harness descriptors.
+
+### Attribution settings
+
+```yaml
+attribution:
+  enabled: true                 # DEFAULT. Observe-only: it records and never acts.
+  poll_interval: 1s             # Process table poll. Min 100ms, max 1m.
+                                # Shorter catches more births, costs more CPU.
+  store_dir: ~/.local/share/devreap/attribution
+  adapter_file: ~/.config/devreap/harnesses.yaml   # Optional extra harness rules.
+  gate_kills: false             # DEFAULT, and a separate opt-in from dry_run.
+                                # Turning it on lets attribution REMOVE processes
+                                # from the kill set. It can never add one.
+
+# Per-class awake-time budget between a recorded owner exit and orphan
+# candidacy. This is NOT grace_period, which stays the wait between SIGTERM and
+# escalation.
+#
+# Your map MERGES with the built-in table below. Naming one class changes that
+# class and leaves every other one alone. You can't delete a class, and an
+# unknown class name is a load error.
+#
+# A missing class means never. So does 0. Neither ever means "immediately":
+# no window means no permission to act. Want a class handled fast? Set a small
+# positive duration.
+lifecycle_grace:
+  headless-browser: 2m   # Cheap to restart, expensive to keep
+  mcp: 5m                # Session restarts reconnect quickly
+  dev-server: 30m        # A running server is doing its job
+  media: 30m             # A long encode looks idle from outside
+  # unclassified and unattributed are never, and can't be set to anything else
+```
+
+On top of the window, a process needs 3 confirming scans before it's called an
+orphan. Both the window and the counter measure awake time only. Sleep pauses
+them and never resets them, which matters because a laptop sleeps around 123
+times a day and the median wake burst lasts 11 seconds. Both values are written
+into every transition record, so a restart resumes where it left off.
 
 ## Built-in patterns
 

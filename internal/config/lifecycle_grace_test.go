@@ -245,3 +245,26 @@ func TestGateKillsStaysOffUnlessSetByHand(t *testing.T) {
 		t.Error("turning killing on also turned phase B gating on; the two opt-ins are separate")
 	}
 }
+
+// TestAttributionDefaultsOnAndObserveOnly asserts the phase A posture: the
+// watcher runs by default because it cannot act, and the opt-in that would let
+// it narrow the kill set stays off.
+func TestAttributionDefaultsOnAndObserveOnly(t *testing.T) {
+	cfg := Default()
+
+	if !cfg.Attribution.Enabled {
+		t.Error("attribution is off by default; phase A ships observe-only and on")
+	}
+	if cfg.Attribution.GateKills {
+		t.Error("phase B gating is on by default; it must be set by hand")
+	}
+	if !cfg.DryRun {
+		t.Error("turning attribution on must not disturb the observe-only kill default")
+	}
+	if cfg.Attribution.PollInterval != DefaultAttributionPoll {
+		t.Errorf("poll interval = %s, want %s", cfg.Attribution.PollInterval, DefaultAttributionPoll)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("the default configuration does not validate: %v", err)
+	}
+}

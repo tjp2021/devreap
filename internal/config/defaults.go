@@ -21,9 +21,12 @@ const (
 // Attribution defaults.
 const (
 	// DefaultAttributionEnabled turns the watcher on by default. It is safe to
-	// default on because attribution is observe-only and can never widen the set
-	// of processes devreap is willing to kill.
-	DefaultAttributionEnabled = false
+	// default on because attribution is observe-only: it records and reports,
+	// and it can never widen the set of processes devreap is willing to kill.
+	//
+	// The separate phase B opt-in, which lets attribution narrow that set, stays
+	// off and is never set by an install or an upgrade.
+	DefaultAttributionEnabled = true
 
 	// DefaultAttributionPoll is the process table poll cadence. One second keeps
 	// the birth race small at roughly 1.5 per cent of one core.
