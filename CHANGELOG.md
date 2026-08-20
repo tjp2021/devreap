@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-08-19
+
+### Fixed
+
+- A terminal-launched Claude Code session is now detected as a running IDE, so `parent_ide_dead` no longer fires while the agent is working ([#8](https://github.com/tjp2021/devreap/issues/8)). macOS reports the short process name as `claude.exe`, which the previous `claude` signature never matched, and a bare `claude` command line carries no install path for the other signatures to read.
+- The native install under `~/.local/share/claude/` is recognised. It names the process after the version, so only the executable path identifies it.
+
+### Added
+
+- `ProcessInfo` carries the resolved executable path. It is empty when the path cannot be read, which is routine on macOS after a tool updates itself, and an empty path is never read as evidence for a kill.
+
 ## [0.2.1] - 2026-08-19
 
 ### Added
@@ -64,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GoReleaser-based release workflow with Homebrew tap support
 - MIT license
 
+[0.2.2]: https://github.com/tjp2021/devreap/releases/tag/v0.2.2
 [0.2.1]: https://github.com/tjp2021/devreap/releases/tag/v0.2.1
 [0.2.0]: https://github.com/tjp2021/devreap/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tjp2021/devreap/releases/tag/v0.1.0
