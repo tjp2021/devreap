@@ -215,7 +215,10 @@ func isEnvAssignment(field string) bool {
 		return false
 	}
 	for i, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || (i > 0 && r >= '0' && r <= '9')) {
+		isLower := r >= 'a' && r <= 'z'
+		isUpper := r >= 'A' && r <= 'Z'
+		isDigit := i > 0 && r >= '0' && r <= '9'
+		if !isLower && !isUpper && r != '_' && !isDigit {
 			return false
 		}
 	}
