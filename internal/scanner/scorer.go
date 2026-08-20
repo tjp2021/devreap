@@ -18,9 +18,14 @@ type ideSignature struct {
 	pathContains string // match against cmdline/exe path (most reliable)
 	exactName    string // fallback: exact process name match (no substring!)
 	// execPath matches only when a whole command-line argument is this exact
-	// executable path. Needed for short bin paths: pathContains "/usr/local/
-	// bin/claude" would also match "/usr/local/bin/claude-helper".
+	// executable path, or when the resolved executable is exactly that path.
+	// Needed for short bin paths: pathContains "/usr/local/bin/claude" would
+	// also match "/usr/local/bin/claude-helper".
 	execPath string
+	// exeContains matches a fragment of the resolved executable path. A
+	// terminal-launched agent has a bare command line ("claude"), so its
+	// install location is only visible through the executable path.
+	exeContains string
 }
 
 var ideSignatures = []ideSignature{
@@ -40,8 +45,19 @@ var ideSignatures = []ideSignature{
 	// npm-installed paths, so a Homebrew or bare-command launch left
 	// parent_ide_dead firing while the agent was sitting right there.
 	{exactName: "claude"},
+	// macOS reports the short process name from p_comm, which for the packaged
+	// CLI is "claude.exe" even when the command line is a bare "claude". The
+	// "claude" name above never matched a real macOS session, so every
+	// terminal-launched agent stayed invisible.
+	{exactName: "claude.exe"},
 	{execPath: "/opt/homebrew/bin/claude"},
 	{execPath: "/usr/local/bin/claude"},
+	// The native installer keeps versioned binaries under the user's data
+	// directory and names the process after the version, so neither the name
+	// nor the bare command line identifies it. Only the executable path does.
+	{exeContains: "/.local/share/claude/"},
+	{exeContains: "/@anthropic-ai/claude-code"},
+	{exeContains: "/node_modules/.bin/claude"},
 
 	// Codex CLI
 	{exactName: "codex"},
@@ -206,7 +222,12 @@ func checkIDERunningFromList(procs []ProcessInfo) bool {
 			if sig.exactName != "" && p.Name == sig.exactName {
 				return true
 			}
-			if sig.execPath != "" && hasExecArg(p.Cmdline, sig.execPath) {
+			if sig.execPath != "" && (p.Exe == sig.execPath || hasExecArg(p.Cmdline, sig.execPath)) {
+				return true
+			}
+			// An empty Exe means the path could not be read, so it must not
+			// match a fragment and claim an IDE that is not there.
+			if sig.exeContains != "" && p.Exe != "" && strings.Contains(p.Exe, sig.exeContains) {
 				return true
 			}
 		}
