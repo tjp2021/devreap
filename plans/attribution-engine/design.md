@@ -158,8 +158,10 @@ transition records so they survive a restart.
 
 R8. Unattributed and unclassified processes never expire out of their grace
 window. They stay visible, and they stay ineligible for as long as they remain
-unattributed or unclassified. A claim upgrade can end that condition, which is
-the only way such a process ever becomes eligible.
+unattributed or unclassified. The two conditions end by different means. A
+claim upgrade ends the unattributed condition, and it is the only way an
+unattributed process becomes eligible. The unclassified condition ends when a
+pattern matches the process on a later scan.
 
 R9. `devreap top` renders per-session process trees, per-session resident
 memory totals, per-process state, and time since owner exit, and it performs no
@@ -197,7 +199,7 @@ runs only for processes that are new in that poll. The budget rests on the
 diff-only path rather than on a whole-machine environment read, and the figures
 are set out under Capacity.
 
-Store size stays bounded by rotation with a hard ceiling, and the tool works
+Store size stays bounded by compaction against a ceiling, and the tool works
 correctly with an empty store.
 
 Restart recovery completes in under one second from a snapshot, and correctness
@@ -804,6 +806,17 @@ evicted. If eviction would have to touch a record younger than its floor, the
 store evicts nothing further and raises a `doctor` finding, because silently
 dropping the measurement series would invalidate the coverage number rather
 than merely shrink the file.
+
+The two size mechanisms do different jobs, and the split is fixed here.
+Compaction performs the type-aware eviction above, and compaction is what
+enforces the ceiling. Segment rotation is a size guard only: it closes a full
+segment and opens the next one, and it never chooses which records to drop. So
+when every record in the oldest segment is still inside its retention floor,
+compaction frees nothing, the store keeps that segment, and the 32 megabyte
+ceiling is exceeded transiently rather than met by dropping a record early. The
+ceiling is therefore enforced by compaction rather than absolute, an exceedance
+raises a `doctor` finding naming the floor that held, and the condition ends by
+itself once that floor passes.
 
 Rotation is sized so that it actually runs. The journal rotates at 4 megabytes
 a segment and keeps 8 segments, which is the 32 megabyte ceiling. Against the
