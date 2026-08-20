@@ -189,8 +189,10 @@ channels resolves to "do not act".
 
 Attribution coverage is the headline quality number. Coverage is the share of
 pattern-matched processes carrying an `observed` ownership claim, counted after
-claim upgrades. Below 90 per cent over a week of real use, the feature has not
-earned its place.
+claim upgrades, and judged on the cohort whose birth the watcher observed after
+the measurement window opened. Raw coverage over every pattern-matched process
+is reported beside the cohort number and never decides it. Below 90 per cent on
+the cohort over a week of real use, the feature has not earned its place.
 
 Watcher cost stays near 1.5 per cent of one core at the default cadence. The
 steady-state poll is one bulk `sysctl` call plus a key comparison, measured at
