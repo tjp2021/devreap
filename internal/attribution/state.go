@@ -196,8 +196,20 @@ func Recover(snapshot *StoreSnapshot, records []Record) *RecoveredState {
 		}
 	}
 
+	// A restart replays only the journal tail, meaning the records written after
+	// the snapshot. Replaying a record the snapshot already folded in would
+	// overwrite newer accumulators with older ones, which is how a restart would
+	// silently discard progress a snapshot had preserved.
+	var since time.Time
+	if snapshot != nil {
+		since = NormalizeTime(snapshot.WrittenAt)
+	}
+
 	journalStates := make(map[string]ProcessState)
 	for _, rec := range records {
+		if !since.IsZero() && rec.At().Before(since) {
+			continue
+		}
 		applyRecord(rec, recovered, journalStates)
 	}
 
