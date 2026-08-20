@@ -1455,9 +1455,21 @@ Watcher uptime reaches 99 per cent or higher of awake time, measured as the
 share of expected 60 second heartbeats actually present, with sleep gaps
 subtracted from the expected count.
 
-The journal stays under the 32 megabyte ceiling across the full 7 days, the
-store's own rotation is observed to run at least once, and every store file is
-observed at mode 0600.
+The journal stays under the 32 megabyte ceiling across the full 7 days, except
+for transient exceedances under retention-floor pressure, each of which raises
+a `doctor` finding naming the floor that held. The store's own rotation is
+observed to run at least once, and every store file is observed at mode 0600.
+
+The exception is not a relaxation. It is the same rule the Storage section
+already states, written where the measurement reads it. Compaction enforces the
+ceiling, and compaction may not evict a record inside its retention floor, so a
+week whose records are all young leaves the journal briefly over the ceiling
+rather than dropping the measurement series that the coverage criterion depends
+on. A criterion demanding an absolute ceiling would therefore have failed the
+plan for behaving exactly as designed. An exceedance is acceptable only while a
+finding names it and the condition clears by itself once the floor passes. An
+exceedance with no finding, or one that persists after its floor passes, fails
+this criterion.
 
 The measured poll duration reported in the heartbeat stays within the stated
 budget, confirming the performance claim rather than assuming it.
