@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +32,24 @@ type Config struct {
 	Patterns                []string      `yaml:"extra_patterns"` // paths to additional pattern files
 	Weights                 WeightConfig  `yaml:"weights"`
 	Hygiene                 HygieneConfig `yaml:"hygiene"`
+
+	// LifecycleGrace is the per-class awake-time budget between a recorded
+	// owner exit and orphan candidacy. It is a different setting from
+	// GracePeriod, which stays the wait between SIGTERM and escalation, and
+	// neither key is renamed.
+	//
+	// A user map merges with the built-in class table and never replaces it.
+	LifecycleGrace map[string]time.Duration `yaml:"lifecycle_grace"`
+}
+
+// LifecycleWindow returns the awake-time budget for a class, and whether the
+// class may ever be acted on. A missing class and a zero value both mean never.
+func (c *Config) LifecycleWindow(class string) (time.Duration, bool) {
+	window, known := c.LifecycleGrace[class]
+	if !known || window <= 0 {
+		return 0, false
+	}
+	return window, true
 }
 
 // NotifyConfig controls macOS notification behavior.
@@ -80,7 +99,8 @@ func Default() *Config {
 		Notify: NotifyConfig{
 			Enabled: DefaultNotifyEnabled,
 		},
-		Weights: DefaultWeights(),
+		Weights:        DefaultWeights(),
+		LifecycleGrace: DefaultLifecycleGrace(),
 	}
 }
 
@@ -150,6 +170,22 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	// yaml.Unmarshal decodes a map key by key into whatever map the field
+	// already holds, which would make merging an accident of the library rather
+	// than a decision. Read the user's entries on their own and merge them
+	// deliberately. See mergeLifecycleGrace for why this matters.
+	var userFile struct {
+		LifecycleGrace map[string]time.Duration `yaml:"lifecycle_grace"`
+	}
+	if err := yaml.Unmarshal(data, &userFile); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	merged, err := mergeLifecycleGrace(DefaultLifecycleGrace(), userFile.LifecycleGrace)
+	if err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	cfg.LifecycleGrace = merged
+
 	cfg.LogDir = expandPath(cfg.LogDir)
 	cfg.PidFile = expandPath(cfg.PidFile)
 	for i, repo := range cfg.Hygiene.GitRepos {
@@ -201,7 +237,74 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	for _, class := range knownLifecycleClasses() {
+		window := c.LifecycleGrace[class]
+		if window < 0 {
+			return fmt.Errorf("lifecycle_grace for %q must not be negative, got %s", class, window)
+		}
+		if window > 24*time.Hour {
+			return fmt.Errorf("lifecycle_grace for %q must be <= 24h, got %s", class, window)
+		}
+	}
+
 	return nil
+}
+
+// mergeLifecycleGrace merges a user window map into the built-in class table.
+// It never replaces the table.
+//
+// This repository has already paid for the other choice. The P0-8 finding in
+// the 2026-08-19 verification record documents a yaml.Unmarshal into a slice
+// that overwrote the whole value, so any user config containing a blocklist key
+// silently discarded all 26 built-in protections including the database, shell,
+// and window server entries. The test suite asserted that replacement as correct
+// while the README promised the opposite. A map-valued key with per-class
+// entries is the same hazard in a new place, so the rule is fixed here.
+//
+// Partial specification changes only what it names. A user cannot delete a class
+// from the table, and an unknown class name is a load error rather than a silent
+// addition.
+func mergeLifecycleGrace(builtin, user map[string]time.Duration) (map[string]time.Duration, error) {
+	merged := make(map[string]time.Duration, len(builtin))
+	for class, window := range builtin {
+		merged[class] = window
+	}
+
+	for class, window := range user {
+		if _, known := builtin[class]; !known {
+			return nil, fmt.Errorf("unknown lifecycle_grace class %q, known classes are %s",
+				class, strings.Join(knownLifecycleClasses(), ", "))
+		}
+		if window < 0 {
+			return nil, fmt.Errorf("lifecycle_grace for %q must not be negative, got %s", class, window)
+		}
+		if window > 0 && isNeverActionableClass(class) {
+			// R8 keeps these two ineligible for as long as the condition holds,
+			// so a positive window here could never take effect. Refusing it is
+			// honest; accepting it would be a setting that does nothing.
+			return nil, fmt.Errorf("lifecycle_grace for %q must stay never, because an %s process is never eligible at any age", class, class)
+		}
+		merged[class] = window
+	}
+	return merged, nil
+}
+
+func knownLifecycleClasses() []string {
+	classes := make([]string, 0, len(DefaultLifecycleGrace()))
+	for class := range DefaultLifecycleGrace() {
+		classes = append(classes, class)
+	}
+	sort.Strings(classes)
+	return classes
+}
+
+func isNeverActionableClass(class string) bool {
+	for _, never := range NeverActionableClasses {
+		if class == never {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeBlocklist returns the built-in entries followed by any user entries
