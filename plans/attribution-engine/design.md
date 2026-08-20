@@ -157,7 +157,9 @@ pauses them, and never resets or invalidates them. Both values persist in
 transition records so they survive a restart.
 
 R8. Unattributed and unclassified processes never expire out of their grace
-window. They stay visible and stay ineligible forever.
+window. They stay visible, and they stay ineligible for as long as they remain
+unattributed or unclassified. A claim upgrade can end that condition, which is
+the only way such a process ever becomes eligible.
 
 R9. `devreap top` renders per-session process trees, per-session resident
 memory totals, per-process state, and time since owner exit, and it performs no
@@ -594,7 +596,7 @@ recorded for display and for earlier notification.
 | `OWNER_GONE` | Owner exit recorded, process still alive | No |
 | `GRACE_PERIOD` | Waiting out `lifecycle_grace` for the class | No |
 | `ORPHAN_CANDIDATE` | Window budget spent, confirmations accumulating | No |
-| `CONFIRMED_ORPHAN` | All six conditions of R6 hold | Phase B only |
+| `CONFIRMED_ORPHAN` | All five conditions of R6 hold | Phase B only |
 | `RECLAIM_REQUESTED` | Phase B, kill authorized and re-verifying | Phase B only |
 | `RECLAIMED` | Phase B, process terminated | Terminal |
 | `RECLAIM_FAILED` | Phase B, kill aborted or refused | No |
@@ -637,7 +639,7 @@ is observed alive again, or when a claim upgrade attaches it to a live session.
 | `RECLAIM_REQUESTED` | `RECLAIMED` | Live re-verification passed and the signal succeeded |
 | `RECLAIM_REQUESTED` | `RECLAIM_FAILED` | Re-verification failed, or the signal failed |
 | `RECLAIM_REQUESTED` | `ACTIVE` | Re-verification observed adoption; the kill is abandoned |
-| `RECLAIM_FAILED` | `ORPHAN_CANDIDATE` | Backoff elapsed; the process re-earns confirmations before any retry |
+| `RECLAIM_FAILED` | `ORPHAN_CANDIDATE` | Backoff elapsed and attempts remain; the process re-earns confirmations before any retry |
 | `RECLAIM_FAILED` | `ACTIVE` | Adoption |
 | `UNATTRIBUTED` | `ACTIVE` | A claim upgrade resolved ownership to a live session |
 | any | `EXITED` | The process key is no longer present |
@@ -646,7 +648,9 @@ Two rules govern this table. Every state except `EXITED` and `RECLAIMED` has an
 edge back to `ACTIVE`, which is what R7 requires, and `RECLAIM_FAILED` returns
 to candidacy rather than retrying a kill directly, so a failed attempt must
 re-earn its confirmations. Retry backoff starts at one minute of awake time and
-doubles to a one hour cap.
+doubles to a one hour cap, and attempts are capped at 5. After the fifth
+failure the record is marked reclaim-exhausted, stops returning to candidacy,
+and stays report-only while keeping its recovery edge to `ACTIVE`.
 
 A confirmation only fails when a required condition is observed to be false. An
 unreadable condition is neither a confirmation nor a failure: the counter holds
@@ -671,6 +675,34 @@ interval adds at least 90 seconds of awake time on top of the window.
 Confirmations accumulate across sleep, and they need not be consecutive in wall
 clock terms.
 
+#### Merge semantics for `lifecycle_grace`
+
+A user-supplied `lifecycle_grace` map merges with the class table above. It
+never replaces it.
+
+This repository has already paid for the other choice. The P0-8 finding in the
+2026-08-19 verification record documents a `yaml.Unmarshal` into a slice, which
+overwrote the whole value, so any user config containing a `blocklist` key
+silently discarded all 26 built-in protections including the database, shell,
+and window server entries. The test suite asserted that replacement as correct
+while the README promised the opposite. A map-valued key with per-class entries
+is the same hazard in a new place, so the rule is fixed here before the code
+exists.
+
+Partial specification changes only what it names. A user map of `{mcp: 10m}`
+sets the MCP window to 10 minutes and leaves the browser window at 2 minutes,
+the server window at 30 minutes, the media window at 30 minutes, and both
+`never` entries untouched. A user cannot delete a class from the table, and an
+unknown class name is a load error rather than a silent addition.
+
+A missing class means `never`, and so does a zero value. Neither ever means
+"immediately". Absence of a window is absence of permission to act, which is
+the same direction every other unknown resolves in this design. A user who
+wants a class acted on quickly sets a small positive duration, and there is no
+value that skips the wait entirely.
+
+Merging is asserted by test, and the test names the P0-8 record as its reason.
+
 ### Sleep semantics
 
 Sleep pauses a lifecycle window. It never resets one and never invalidates one.
@@ -687,12 +719,13 @@ The measured behavior of this machine forces that rule. Averaged over 7 full
 days of the retained power log, the machine enters sleep 123 times a day. Of
 880 dark-wake bursts in that log, the median awake burst lasts 11 seconds, the
 ninetieth percentile lasts 50 seconds, and 95 per cent are shorter than 5
-minutes. A rule requiring a gap-free window would therefore never complete the
-5 minute window for a server class while the machine is unattended, and would
-never complete the 30 minute window at all. A rule that resets on any gap is
-worse, because it guarantees the accumulator returns to zero roughly every
-minute overnight. Either choice makes overnight reclaim impossible, which is
-precisely when leaked processes pile up.
+minutes. A rule requiring a gap-free window would therefore rarely complete the
+5 minute window while the machine is unattended, since only about 4 per cent of
+bursts run that long, and would almost never complete the 30 minute window. A
+rule that resets on any gap is worse, because it returns the accumulator to
+zero roughly every minute overnight. Either choice makes overnight reclaim
+unreliable to the point of uselessness, and overnight is precisely when leaked
+processes pile up.
 
 Accumulators are persisted, so they survive a restart. Each transition record
 carries the accumulated awake milliseconds and the confirmation count at the
@@ -749,10 +782,38 @@ per state change rather than per scan. Across the 7 day retention window that
 is about 21 megabytes, which fits under the ceiling with headroom for an
 unusually busy day.
 
-Retention is 7 days for records of exited processes, unbounded for records of
-live processes, and a 32 megabyte hard ceiling enforced by rotation. Snapshots
-are written every 5 minutes and on clean shutdown, so a restart replays only
-the journal tail.
+Retention is set per record type, because the exit criteria depend on two of
+them surviving a full week.
+
+| Record type | Retention floor | Note |
+|---|---|---|
+| Birth, live process | Unbounded | Never evicted while the process runs |
+| Birth, exited process | 7 days | The bulk of the volume |
+| Owner exit | 8 days | Small, and needed to read a session's history |
+| Transition | 8 days | Carries the accumulators and the audit trail |
+| Heartbeat | 8 days | The coverage and uptime measurement series |
+| Claim upgrade | 8 days | Read together with the birth record it amends |
+
+The 8 day floor gives the 7 day exit criteria a day of margin, so a measurement
+window never ends against the edge of retention.
+
+Eviction under ceiling pressure follows a fixed order: exited-process birth
+records first, oldest first, then owner exit records past their floor, then
+heartbeats past their floor. A record belonging to a live process is never
+evicted. If eviction would have to touch a record younger than its floor, the
+store evicts nothing further and raises a `doctor` finding, because silently
+dropping the measurement series would invalidate the coverage number rather
+than merely shrink the file.
+
+Rotation is sized so that it actually runs. The journal rotates at 4 megabytes
+a segment and keeps 8 segments, which is the 32 megabyte ceiling. Against the
+measured budget of roughly 3 megabytes a day, a segment fills about every 32
+hours, so ordinary use rotates about 5 times across a 7 day window. The exit
+criterion asking to observe rotation is therefore reachable without contriving
+it, and a forced-rotation unit test covers the mechanism itself.
+
+Snapshots are written every 5 minutes and on clean shutdown, so a restart
+replays only the journal tail.
 
 Snapshot and journal can disagree after a crash, and the rule is to take the
 more restrictive answer. When the snapshot shows `ACTIVE` and the journal tail
@@ -778,9 +839,17 @@ code on its scan path; it reads the store through a lookup that returns "not
 attributed" on any error. Nothing in the watcher holds a lock the scanner
 needs, so a stuck watcher cannot stall a scan.
 
-Watcher heartbeat stale. Missing a heartbeat for 3 intervals marks attribution
-data untrusted. All states freeze, no state advances toward candidacy, and
-phase B gating refuses every process until the watcher recovers.
+Watcher heartbeat stale. Staleness is measured in awake time everywhere it is
+measured, so an overnight sleep never reads as a dead watcher. Three heartbeat
+intervals of awake time with no heartbeat, meaning 3 minutes awake at the 60
+second cadence, marks attribution data untrusted.
+
+Untrusted data freezes the lifecycle. No state advances toward candidacy, and
+phase B gating refuses every process until the watcher recovers. Awake-time
+accumulators pause for the whole untrusted period exactly as they pause across
+sleep, because time nobody observed cannot be evidence that a process stayed
+orphaned. Pausing is the more restrictive reading, and it keeps a watcher
+outage from silently advancing a process toward eligibility.
 
 Store corrupted or truncated. The loader discards the unparseable tail and
 keeps the valid prefix. Records lost this way become unattributed. A store with
@@ -824,8 +893,17 @@ action.
 
 Retries and idempotency. The watcher does not retry a failed read inside a
 cycle, because the next cycle re-reads anyway. Writes are append-only and
-idempotent by key plus timestamp. There is no unbounded retry anywhere in the
-design.
+idempotent by key plus timestamp. Every retry in the design is bounded by both
+a backoff and a count: a reclaim attempt may be retried at most 5 times, the
+backoff starts at one minute of awake time and doubles to a one hour cap, and
+after the fifth failure the record is marked reclaim-exhausted and stops
+returning to candidacy.
+
+Exhaustion bounds the action, not the recovery. An exhausted record stays in
+`RECLAIM_FAILED` as report-only and keeps its edge back to `ACTIVE`, so R7
+still holds and an adopted process still recovers. It is a terminal state for
+attempts rather than a terminal state in the graph, which is the reading that
+keeps both the retry bound and the recovery guarantee true at once.
 
 ## Threats, privacy, secrets, and abuse
 
@@ -870,16 +948,36 @@ and closing the terminal would then look like a session ending. The processes
 affected are ones the phase A path already permits, so the blast radius is
 bounded, and it is not zero.
 
-The registry therefore validates every descriptor at load and rejects four
-shapes outright. It rejects a root rule naming a shell, a terminal emulator, a
-multiplexer, `launchd`, process 1, or any entry on the built-in blocklist. It
-rejects a rule that would match an ancestor of another recognized root, because
-roots must not nest. It rejects a rule with no discriminating field, meaning
-one that would match on a bare name shared with a system binary. It bounds the
-ancestry walk at a maximum link depth, 32 by default, beyond which attribution
-stops and the process is recorded as unattributed rather than joined to a
-distant session. A rejected descriptor is skipped with a `doctor` finding, and
-the rest of the file still loads.
+The registry therefore validates descriptors at load, and the validation
+applies to user-supplied descriptors only. Built-in descriptors ship with the
+binary, are reviewed in the repository, and are trusted by construction. A
+load-time rule that also policed the built-ins would reject the shipped table,
+because an editor bundle root is legitimately an ancestor of the extension-host
+root that runs inside it.
+
+Load-time validation rejects three shapes in a user file. It rejects a root
+rule naming a shell, a terminal emulator, a multiplexer, `launchd`, process 1,
+or any entry on the built-in blocklist. It rejects a root rule naming a process
+supervisor or manager, including `pm2`, `supervisord`, `foreman`, and that
+class generally, because a supervisor's children are supervised rather than
+abandoned, and the current scanner already treats supervision as a reason to
+leave a process alone. It rejects a rule with no discriminating field, meaning
+one that would match on a bare name shared with a system binary. A rejected
+descriptor is skipped with a `doctor` finding, and the rest of the file still
+loads.
+
+Nesting is a runtime question rather than a load-time one, because whether one
+root sits above another depends on the process tree in front of you and not on
+the descriptor text. Roots may legitimately nest, and the shipped table
+contains such a pair. The rule at runtime is nearest-root-wins, the same
+language the generic descriptor already uses: the session root of a process is
+the closest recognized root among its ancestors, so an agent binary under an
+extension host belongs to the extension-host session rather than to the editor
+bundle that contains it.
+
+The ancestry walk is bounded at a maximum link depth, 32 by default, beyond
+which attribution stops and the process is recorded as unattributed rather than
+joined to a distant session.
 
 The process-arguments reader carries its own risk and is worth naming
 separately. It reads another process's argument and environment memory through
@@ -1049,7 +1147,7 @@ failure, asserting the resulting confidence value.
 
 A table-driven state machine test drives every transition in the table above,
 including each recovery path and the confirmation reset, and asserts that no
-input sequence reaches `CONFIRMED_ORPHAN` without all six conditions of R6.
+input sequence reaches `CONFIRMED_ORPHAN` without all five conditions of R6.
 
 A clock injection test simulates sleep and wake by advancing wall time without
 advancing the monotonic clock. It asserts that the gap credits zero awake time,
@@ -1080,10 +1178,36 @@ A procargs test parses a captured `KERN_PROCARGS2` buffer, a truncated one, and
 one with a corrupt length prefix, asserting a clean error rather than a partial
 result on the last two.
 
-An adapter validation test asserts that descriptors naming a shell, a terminal
-emulator, `launchd`, or a blocklisted binary are rejected at load, that a
-nesting root is rejected, that the rest of the file still loads, and that each
-rejection produces a `doctor` finding.
+An adapter validation test asserts that user descriptors naming a shell, a
+terminal emulator, `launchd`, a process supervisor, or a blocklisted binary are
+rejected at load, that the built-in table itself loads without triggering those
+rules, that the rest of a user file still loads after a rejection, and that
+each rejection produces a `doctor` finding.
+
+A nearest-root test builds a tree where one recognized root sits above another,
+which the shipped table already contains, and asserts the descendant is
+attributed to the closer root rather than the outer one.
+
+A merge semantics test supplies a user map naming one class, asserts that class
+changes and every other class keeps its built-in value, asserts a missing class
+and a zero value both read as `never` rather than as immediate, and asserts an
+unknown class name is a load error. Its comment names the P0-8 record as the
+reason it exists.
+
+A retention test writes records of every type past the ceiling and asserts the
+eviction order, that no live-process record is evicted, that heartbeat and
+transition records inside their 8 day floor survive, and that pressure against
+the floor raises a `doctor` finding instead of dropping them.
+
+A rotation test forces the segment size down and asserts the journal rotates,
+keeps the configured segment count, and stays under the ceiling.
+
+A retry bound test fails five reclaim attempts and asserts the record becomes
+reclaim-exhausted, stops returning to candidacy, remains report-only, and still
+recovers to `ACTIVE` on adoption.
+
+An untrusted-data test stops the heartbeat for three awake intervals and
+asserts accumulators pause rather than advance, and resume on recovery.
 
 An evidence export test asserts the exported document contains the spawn tree,
 the timings, the owner exit, and every transition, and that it passes the
